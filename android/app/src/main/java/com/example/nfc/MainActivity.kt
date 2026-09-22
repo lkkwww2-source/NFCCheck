@@ -346,17 +346,19 @@ class MainActivity : ComponentActivity() {
             val todayText = SimpleDateFormat("yyyy-MM-dd", Locale.KOREAN).format(now.time)
 
             if (matchedStudent != null) {
+                // 여러 학년이 섞일 수 있어 "3반"만으로는 헷갈리므로 학년을 붙여서 표시한다.
+                val displayClass = "${studentGrade(matchedStudent.studentId)}-${matchedStudent.className}"
                 val periodResult = resolveNfcPeriod(hour * 60 + minute)
 
                 if (periodResult != null) {
                     val (period, status) = periodResult
-                    statusMessage.value = "🎯 [NFC 태깅] ${matchedStudent.className} ${matchedStudent.name} $status 인정!"
+                    statusMessage.value = "🎯 [NFC 태깅] $displayClass ${matchedStudent.name} $status 인정!"
                     Toast.makeText(this, "${matchedStudent.name} 학생 자습 참여 인정", Toast.LENGTH_SHORT).show()
 
                     if (isStudentMode.value) {
                         studentModeResult.value = StudentAttendanceResult(
                             name = matchedStudent.name,
-                            className = matchedStudent.className,
+                            className = displayClass,
                             slotName = period.slotName,
                             timeString = timeString,
                             status = status
@@ -377,7 +379,7 @@ class MainActivity : ComponentActivity() {
                     if (isStudentMode.value) {
                         studentModeResult.value = StudentAttendanceResult(
                             name = matchedStudent.name,
-                            className = matchedStudent.className,
+                            className = displayClass,
                             slotName = "시간외",
                             timeString = timeString,
                             status = "시간외"
@@ -1022,8 +1024,12 @@ class MainActivity : ComponentActivity() {
 
     @Composable
     fun IndividualStatsContent(slots: List<String>, students: List<MonthlySlotEntry>) {
+        // className이 이제 "1-3반"(학년-반) 형태이므로 학년 → 반 순서로 정렬한다.
         val classList = students.map { it.className }.distinct().sortedWith(
-            compareBy { it.replace("반", "").toIntOrNull() ?: 99 }
+            compareBy(
+                { it.substringBefore("-").toIntOrNull() ?: 99 },
+                { it.substringAfter("-").replace("반", "").toIntOrNull() ?: 99 }
+            )
         )
         var selectedClassTab by remember { mutableStateOf(classList.firstOrNull() ?: "") }
 

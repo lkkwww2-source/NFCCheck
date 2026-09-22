@@ -23,7 +23,10 @@ function getMonthlyStatsForAndroid(month) {
       var slotName = String(row[2] || '').trim();
       var studentNum = cleanStudentId(row[3]);
       var name = String(row[4] || '').trim();
-      var className = String(row[5] || '').trim();
+      // 여러 학년이 섞일 수 있어 "3반"만으로는 어느 학년인지 알 수 없으므로
+      // 학번 첫 자리(학년)를 붙여 "1-3반" 형태로 만든다. (studentGrade()/inferGradeFromStudentId_ 와 동일한 규칙)
+      var rawClassName = String(row[5] || '').trim();
+      var className = studentNum ? (studentNum.charAt(0) + '-' + rawClassName) : rawClassName;
       var status = String(row[6] || '').trim();
       if (!studentNum || !slotName || !status) continue;
 
