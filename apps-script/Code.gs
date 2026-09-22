@@ -1,9 +1,14 @@
 // [Code.gs] 안드로이드 NFC 출결 시스템 API 라우터
-// 이 프로젝트는 이제 안드로이드 앱 전용 백엔드로만 동작한다 (QR/웹앱 화면 없음).
+// 이 프로젝트는 안드로이드 앱 백엔드 + 교실 전자칠판(터치스크린) 화면으로 동작한다.
 
 function doGet(e) {
   if (!e || !e.parameter) {
     return ContentService.createTextOutput('NFC 출결 시스템 API');
+  }
+
+  // 🖥️ 교실 전자칠판 실시간 출결판 (board.html이 google.script.run으로 서버 함수를 직접 호출)
+  if (e.parameter.page === 'board') {
+    return HtmlService.createHtmlOutputFromFile('Board').setTitle('자율학습 출석판');
   }
 
   var mode = e.parameter.mode;

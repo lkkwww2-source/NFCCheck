@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>자율학습 출석판</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css');
+    body { font-family: 'Pretendard', sans-serif; background-color: #111827; color: white; overflow: hidden; user-select: none; touch-action: manipulation; }
+    .container-type-size { container-type: size; }
+    .dynamic-text { font-size: clamp(1rem, 15cqi, 2.5rem); }
+    .dynamic-title { font-size: clamp(1.2rem, 10cqi, 1.8rem); }
+    .slot-tab { transition: all 0.3s ease; border: 2px solid transparent; }
+    .slot-active { background-color: #2563eb; color: #fef08a; font-weight: 900; transform: scale(1.1); box-shadow: 0 0 20px rgba(59, 130, 246, 0.8); border: 2px solid #93c5fd; z-index: 10; }
+    .btn-status-none { background-color: #374151; }
+    .btn-status-present { background-color: #22c55e; }
+    .btn-status-late { background-color: #f59e0b; }
+    #sync-indicator { transition: opacity 0.3s; }
+  </style>
+</head>
+<body class="h-screen w-screen flex flex-col">
+  <header class="h-24 bg-gray-800 border-b border-gray-700 flex items-center px-6 relative">
+    <div class="w-1/5 flex items-center gap-3 container-type-size">
+      <button onclick="openSettings()" class="p-3 bg-gray-700 rounded-lg hover:bg-gray-600 transition-colors">⚙️</button>
+      <div id="class-info" class="font-bold text-2xl whitespace-nowrap">로딩중...</div>
+    </div>
+
+    <!-- 💡 화면 표시와 내부 데이터 값 분리 -->
+    <div class="w-1/2 flex justify-center gap-4">
+      <button onclick="changeSlot('1타임')" id="tab-1타임" class="slot-tab px-6 py-3 rounded-xl bg-gray-700 text-xl text-gray-300">방과후(1타임)</button>
+      <button onclick="changeSlot('2타임')" id="tab-2타임" class="slot-tab px-6 py-3 rounded-xl bg-gray-700 text-xl text-gray-300">야간1(2타임)</button>
+      <button onclick="changeSlot('3타임')" id="tab-3타임" class="slot-tab px-6 py-3 rounded-xl bg-gray-700 text-xl text-gray-300">야간2(3타임)</button>
+    </div>
+
+    <div class="w-[30%] text-right flex flex-col justify-center">
+      <div id="date-display" class="text-gray-400 text-lg">YYYY년 MM월 DD일</div>
+      <div id="time-display" class="text-4xl font-bold tracking-wider text-blue-400">00:00:00</div>
+    </div>
+
+    <div id="sync-indicator" class="absolute top-2 right-2 flex items-center gap-1 opacity-0 text-gray-400 text-xs font-bold">
+      <span class="animate-spin">⏳</span> 저장 중...
+    </div>
+  </header>
+
+  <main class="flex-1 flex overflow-hidden">
+    <section class="w-2/3 p-4 grid grid-cols-5 lg:grid-cols-6 gap-3 overflow-y-auto content-start" id="student-grid">
+      <div class="col-span-full flex items-center justify-center text-gray-400 text-2xl h-full">데이터를 불러오는 중입니다...</div>
+    </section>
+
+    <section class="w-1/3 bg-gray-900 border-l border-gray-700 p-4 flex flex-col container-type-size">
+      <h2 id="stats-title" class="text-center font-bold mb-3 text-blue-300 dynamic-title transition-all duration-300">학년 현황</h2>
+      <div class="bg-blue-900/40 border border-blue-500/50 rounded-xl p-3 mb-3 flex justify-between items-center shadow-lg transition-all duration-300">
+        <span class="text-blue-200 font-bold text-lg lg:text-xl">전체 총합계</span>
+        <span id="stats-total-count" class="text-2xl lg:text-3xl font-black text-blue-400">0명</span>
+      </div>
+      <div class="flex-1 grid grid-rows-9 gap-2 transition-opacity duration-300 ease-in-out" id="stats-grid"></div>
+    </section>
+  </main>
+
+  <script>
+    let currentGrade = localStorage.getItem('boardGrade') || 1;
+    let currentClass = localStorage.getItem('boardClass') || 1;
+    let currentSlot = '1타임'; // 💡 기본값을 1타임으로 변경
+    let allStudents = [];
+    let todayRecords = [];
+
+    // 💡 인디케이터용 배열 변경
+    const timeSlots = ['1타임', '2타임', '3타임'];
+
+    let syncQueue = [];
+    let isSyncing = false;
+
+    setInterval(() => {
+      const now = new Date();
+      document.getElementById('time-display').innerText = now.toLocaleTimeString('ko-KR', { hour12: false });
+      document.getElementById('date-display').innerText = now.toLocaleDateString('ko-KR', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'short' });
+    }, 1000);
+
+    setInterval(() => {
+      if(syncQueue.length > 0 && !isSyncing) {
+        isSyncing = true;
+        document.getElementById('sync-indicator').style.opacity = '1';
+        const updates = [...syncQueue];
+        syncQueue = [];
+        google.script.run.withSuccessHandler(() => {
+          isSyncing = false;
+          document.getElementById('sync-indicator').style.opacity = '0';
+        }).withFailureHandler((e) => {
+          syncQueue = [...updates, ...syncQueue];
+          isSyncing = false;
+          document.getElementById('sync-indicator').style.opacity = '0';
+        }).syncBatch(updates);
+      }
+    }, 1500);
+
+    // 💡 안드로이드 앱/NFC 태깅으로 들어온 최신 기록을 놓치지 않도록 주기적으로 다시 불러온다.
+    // (전송 대기 중인 로컬 변경이 있을 때는 덮어쓰지 않도록 syncQueue가 비어있을 때만 갱신)
+    setInterval(() => {
+      if (syncQueue.length === 0 && !isSyncing) {
+        google.script.run.withSuccessHandler((records) => {
+          todayRecords = records;
+          renderBoard();
+          renderStats();
+        }).withFailureHandler(() => {}).getTodayRecords();
+      }
+    }, 20000);
+
+    window.onload = () => {
+      updateHeader();
+      google.script.run.withSuccessHandler(initApp).getInitialData();
+    };
+
+    function initApp(data) {
+      allStudents = data.students;
+      todayRecords = data.records;
+      renderBoard();
+      renderStats();
+    }
+
+    function updateHeader() {
+      const classText = currentClass == '0' ? '전체' : `${currentClass}반`;
+      document.getElementById('class-info').innerText = `${currentGrade}학년 ${classText}`;
+      document.querySelectorAll('.slot-tab').forEach(el => el.classList.remove('slot-active'));
+      document.getElementById(`tab-${currentSlot}`).classList.add('slot-active');
+    }
+
+    function changeSlot(slot) {
+      currentSlot = slot;
+      updateHeader();
+      renderBoard();
+      renderStats();
+    }
+
+    function renderBoard() {
+      const grid = document.getElementById('student-grid');
+      grid.innerHTML = '';
+      const classStudents = allStudents.filter(s => s[0] == currentGrade && (currentClass == '0' || s[1] == currentClass));
+
+      classStudents.forEach(student => {
+        const [grade, cls, id, name] = student;
+        const record = todayRecords.find(r => r[2] === currentSlot && r[3] == id);
+        const status = record ? record[5] : '미확인';
+
+        let colorClass = 'btn-status-none';
+        if(status === '출석') colorClass = 'btn-status-present';
+        if(status === '지각') colorClass = 'btn-status-late';
+
+        let indicatorsHTML = `<div class="absolute top-2.5 left-3 flex gap-1.5">`;
+        timeSlots.forEach(slotName => {
+          const slotRecord = todayRecords.find(r => r[2] === slotName && r[3] == id);
+          const isParticipated = slotRecord && (slotRecord[5] === '출석' || slotRecord[5] === '지각');
+          if (isParticipated) indicatorsHTML += `<div class="w-2.5 h-2.5 rounded-full bg-green-300 shadow-[0_0_5px_#86efac]"></div>`;
+          else indicatorsHTML += `<div class="w-2.5 h-2.5 rounded-full border border-gray-500 bg-gray-800/50"></div>`;
+        });
+        indicatorsHTML += `</div>`;
+
+        const btn = document.createElement('button');
+        const heightClass = currentClass == '0' ? 'h-24' : 'aspect-square';
+
+        btn.className = `relative ${colorClass} ${heightClass} rounded-2xl flex flex-col items-center justify-center container-type-size transition-transform active:scale-95 shadow-lg border border-gray-600`;
+        btn.onclick = () => toggleStatus(id, name, status);
+
+        btn.innerHTML = `
+          ${indicatorsHTML}
+          <div class="text-gray-300 font-medium text-sm lg:text-base mt-2">${id}</div>
+          <div class="font-bold dynamic-text mt-1">${name}</div>
+          <div class="mt-2 text-sm font-bold ${status === '미확인' ? 'text-transparent' : 'text-white'}">${status}</div>
+        `;
+        grid.appendChild(btn);
+      });
+    }
+
+    function toggleStatus(id, name, currentStatus) {
+      let nextStatus = '출석';
+      if(currentStatus === '출석') nextStatus = '지각';
+      else if(currentStatus === '지각') nextStatus = '미확인';
+
+      if(nextStatus === '미확인') todayRecords = todayRecords.filter(r => !(r[2] === currentSlot && r[3] == id));
+      else {
+        const existing = todayRecords.find(r => r[2] === currentSlot && r[3] == id);
+        if(existing) existing[5] = nextStatus;
+        else todayRecords.push([new Date(), '오늘', currentSlot, id, name, nextStatus]);
+      }
+
+      renderBoard();
+      renderStats();
+      syncQueue.push({ id, name, slot: currentSlot, status: nextStatus, timestamp: new Date().getTime() });
+    }
+
+    function renderStats() {
+      const statsGrid = document.getElementById('stats-grid');
+      const statsTitle = document.getElementById('stats-title');
+      const statsTotalCount = document.getElementById('stats-total-count');
+
+      statsGrid.style.opacity = '0';
+      setTimeout(() => {
+        // 💡 통계 제목에도 변환된 이름 표시
+        let displayTitle = currentSlot;
+        if(currentSlot === '1타임') displayTitle = '방과후(1타임)';
+        if(currentSlot === '2타임') displayTitle = '야간1(2타임)';
+        if(currentSlot === '3타임') displayTitle = '야간2(3타임)';
+
+        statsTitle.innerText = `${displayTitle} 현황`;
+        statsGrid.innerHTML = '';
+        let totalCount = 0;
+
+        for(let i=1; i<=9; i++) {
+          const classSts = allStudents.filter(s => s[0] == currentGrade && s[1] == i);
+          const presentCount = todayRecords.filter(r => r[2] === currentSlot && classSts.some(s => s[2] == r[3]) && (r[5] === '출석' || r[5] === '지각')).length;
+          totalCount += presentCount;
+          const countColor = presentCount > 0 ? 'text-blue-400' : 'text-gray-500';
+
+          statsGrid.innerHTML += `
+            <div class="bg-gray-800 rounded-lg flex items-center justify-between px-6 border border-gray-700 container-type-size">
+              <span class="font-bold text-gray-300 dynamic-text">${i}반</span>
+              <span class="font-bold ${countColor} dynamic-text transition-colors">${presentCount}명</span>
+            </div>
+          `;
+        }
+        statsTotalCount.innerText = `${totalCount}명`;
+        statsGrid.style.opacity = '1';
+      }, 150);
+    }
+
+    function openSettings() {
+      const pwd = prompt("설정을 변경하려면 비밀번호를 입력하세요.");
+      if(pwd === "0000") {
+        const newGrade = prompt("몇 학년으로 설정하시겠습니까?\n(1~3 숫자만 입력)", currentGrade);
+        if(newGrade && !isNaN(newGrade) && newGrade >= 1 && newGrade <= 3) {
+          const newClass = prompt("몇 반으로 설정하시겠습니까?\n(0 입력 시 전체보기, 1~9 숫자 입력)", currentClass);
+          if(newClass && !isNaN(newClass) && newClass >= 0 && newClass <= 9) {
+            currentGrade = newGrade;
+            currentClass = newClass;
+            localStorage.setItem('boardGrade', currentGrade);
+            localStorage.setItem('boardClass', currentClass);
+            updateHeader();
+            renderBoard();
+            renderStats();
+          }
+        }
+      } else if (pwd !== null) {
+        alert("비밀번호가 틀렸습니다.");
+      }
+    }
+  </script>
+</body>
+</html>
