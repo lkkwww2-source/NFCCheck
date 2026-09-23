@@ -253,10 +253,14 @@ class MainActivity : ComponentActivity() {
                                 colors = CardDefaults.cardColors(containerColor = Color(0xFFFFFAEA)),
                                 border = BorderStroke(1.dp, Color(0xFFFFEAA7))
                             ) {
-                                Column(modifier = Modifier.padding(12.dp).fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
-                                    Text(text = "📅 현재 시각: $todayDateAndDayDisplay", fontSize = 15.sp, fontWeight = FontWeight.ExtraBold, color = Color(0xFF0984E3))
-                                    Spacer(modifier = Modifier.height(4.dp))
-                                    Text(text = statusMessage.value, fontSize = 13.sp, fontWeight = FontWeight.Bold, color = Color(0xFF2C3E50), textAlign = TextAlign.Center)
+                                Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp).fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+                                    Text(text = "📅 현재 시각: $todayDateAndDayDisplay", fontSize = 13.sp, fontWeight = FontWeight.ExtraBold, color = Color(0xFF0984E3))
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Text(
+                                        text = statusMessage.value, fontSize = 11.sp, fontWeight = FontWeight.Bold,
+                                        color = Color(0xFF2C3E50), textAlign = TextAlign.Center,
+                                        maxLines = 1, overflow = TextOverflow.Ellipsis
+                                    )
                                 }
                             }
 
