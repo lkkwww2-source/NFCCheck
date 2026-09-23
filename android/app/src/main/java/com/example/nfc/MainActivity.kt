@@ -31,6 +31,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -558,19 +559,22 @@ class MainActivity : ComponentActivity() {
                                     Text(student.name, fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Color(0xFF2D3436))
                                 }
 
-                                Row(modifier = Modifier.weight(2.8f), horizontalArrangement = Arrangement.End) {
-                                    PERIODS.forEachIndexed { idx, period ->
+                                Row(
+                                    modifier = Modifier.weight(2.8f),
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    PERIODS.forEach { period ->
                                         val key = "${student.studentId}|${period.slotName}"
                                         val record = dailyStatusMap[key]
                                         val sync = syncStateMap[key] ?: SyncState.NONE
                                         DropdownTimeBadge(
                                             slotName = period.shortLabel,
                                             status = record?.status ?: "",
-                                            syncState = sync
+                                            syncState = sync,
+                                            modifier = Modifier.weight(1f)
                                         ) { selectedStatus ->
                                             updateStudentStatus(student, period, selectedStatus)
                                         }
-                                        if (idx != PERIODS.lastIndex) Spacer(modifier = Modifier.width(4.dp))
                                     }
                                 }
                             }
@@ -583,7 +587,13 @@ class MainActivity : ComponentActivity() {
     }
 
     @Composable
-    fun DropdownTimeBadge(slotName: String, status: String, syncState: SyncState, onStatusSelected: (String) -> Unit) {
+    fun DropdownTimeBadge(
+        slotName: String,
+        status: String,
+        syncState: SyncState,
+        modifier: Modifier = Modifier,
+        onStatusSelected: (String) -> Unit
+    ) {
         val cleanStatus = status.trim()
         var isMenuExpanded by remember { mutableStateOf(false) }
 
@@ -620,24 +630,30 @@ class MainActivity : ComponentActivity() {
         }
         val borderWidth = if (syncState == SyncState.NONE) 0.dp else 2.dp
 
-        Box {
+        Box(modifier = modifier) {
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 modifier = Modifier
-                    .width(84.dp)
+                    .fillMaxWidth()
                     .clip(RoundedCornerShape(6.dp))
                     .background(bgContainerColor)
                     .border(BorderStroke(borderWidth, borderColor), RoundedCornerShape(6.dp))
                     .clickable { isMenuExpanded = true }
-                    .padding(vertical = 6.dp)
+                    .padding(vertical = 6.dp, horizontal = 2.dp)
             ) {
-                Text(text = slotName, fontSize = 10.sp, color = if (!isNotRecorded) Color.White.copy(alpha = 0.85f) else Color.Gray)
+                Text(
+                    text = slotName, fontSize = 9.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    color = if (!isNotRecorded) Color.White.copy(alpha = 0.85f) else Color.Gray
+                )
                 Spacer(modifier = Modifier.height(2.dp))
-                Text(text = displayText, fontSize = 10.sp, fontWeight = FontWeight.ExtraBold, color = contentTextColor, textAlign = TextAlign.Center)
+                Text(
+                    text = displayText, fontSize = 9.sp, fontWeight = FontWeight.ExtraBold,
+                    color = contentTextColor, textAlign = TextAlign.Center, maxLines = 1, overflow = TextOverflow.Ellipsis
+                )
                 when (syncState) {
-                    SyncState.PENDING -> Text("전송중…", fontSize = 7.sp, color = Color.White.copy(alpha = blinkAlpha))
-                    SyncState.SYNCED -> Text("✓ 전송됨", fontSize = 7.sp, color = Color.White.copy(alpha = 0.9f))
-                    SyncState.FAILED -> Text("전송실패", fontSize = 7.sp, color = Color.Yellow)
+                    SyncState.PENDING -> Text("전송중…", fontSize = 5.sp, maxLines = 1, color = Color.White.copy(alpha = blinkAlpha))
+                    SyncState.SYNCED -> Text("✓ 전송됨", fontSize = 5.sp, maxLines = 1, color = Color.White.copy(alpha = 0.9f))
+                    SyncState.FAILED -> Text("전송실패", fontSize = 5.sp, maxLines = 1, color = Color.Yellow)
                     SyncState.NONE -> {}
                 }
             }
