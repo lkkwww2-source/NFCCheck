@@ -76,9 +76,13 @@ import java.util.Locale
 // (예전에는 이 시간대가 서버 3곳 + 앱 2곳에 따로 하드코딩돼 있어서 서로 어긋나는 문제가 있었음)
 // NFC 태깅 = 이 창구 안에 들어온 실제 시각을 그대로 기록.
 // 수동 체크 = 신청/명단 개념이 없어졌으므로 fixedStartTime(타임 시작시각)으로 고정 기록.
+//
+// slotName은 기존 '웹앱응답' 시트 및 전자칠판(Board.html)과 동일하게 "1타임"/"2타임"/"3타임"으로
+// 저장/동기화한다. "방과후"/"야간1"/"야간2"는 앱 화면에 보여줄 때만 쓰는 짧은 이름(shortLabel)이다.
 // ─────────────────────────────────────────────
 data class PeriodDef(
     val slotName: String,
+    val shortLabel: String,
     val onTimeStartMin: Int,
     val onTimeEndMin: Int,
     val lateEndMin: Int,
@@ -87,9 +91,9 @@ data class PeriodDef(
 )
 
 val PERIODS = listOf(
-    PeriodDef("방과후", 17 * 60, 17 * 60 + 14, 18 * 60 + 30, "17:00:00", "1타임(방과후)"),
-    PeriodDef("야간1", 19 * 60, 19 * 60 + 14, 20 * 60 + 10, "19:00:00", "2타임(야간1)"),
-    PeriodDef("야간2", 20 * 60 + 20, 20 * 60 + 34, 21 * 60 + 30, "20:20:00", "3타임(야간2)")
+    PeriodDef("1타임", "방과후", 17 * 60, 17 * 60 + 14, 18 * 60 + 30, "17:00:00", "1타임(방과후)"),
+    PeriodDef("2타임", "야간1", 19 * 60, 19 * 60 + 14, 20 * 60 + 10, "19:00:00", "2타임(야간1)"),
+    PeriodDef("3타임", "야간2", 20 * 60 + 20, 20 * 60 + 34, 21 * 60 + 30, "20:20:00", "3타임(야간2)")
 )
 
 fun resolveNfcPeriod(totalMinutes: Int): Pair<PeriodDef, String>? {
@@ -359,7 +363,7 @@ class MainActivity : ComponentActivity() {
                         studentModeResult.value = StudentAttendanceResult(
                             name = matchedStudent.name,
                             className = displayClass,
-                            slotName = period.slotName,
+                            slotName = period.displayLabel,
                             timeString = timeString,
                             status = status
                         )
@@ -554,7 +558,7 @@ class MainActivity : ComponentActivity() {
                                         val record = dailyStatusMap[key]
                                         val sync = syncStateMap[key] ?: SyncState.NONE
                                         DropdownTimeBadge(
-                                            slotName = period.slotName,
+                                            slotName = period.shortLabel,
                                             status = record?.status ?: "",
                                             syncState = sync
                                         ) { selectedStatus ->
@@ -1650,7 +1654,7 @@ class MainActivity : ComponentActivity() {
             "출석", "지각", "결석", "학사", "리셋" -> action
             else -> return
         }
-        statusMessage.value = "🎯 [수동 변경] ${student.name} -> ${period.slotName} [$action] 반영"
+        statusMessage.value = "🎯 [수동 변경] ${student.name} -> ${period.shortLabel} [$action] 반영"
         sendAttendanceRecord(
             student = student,
             slotName = period.slotName,

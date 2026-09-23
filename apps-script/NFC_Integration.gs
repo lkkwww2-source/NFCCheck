@@ -102,17 +102,41 @@ function updateStudentNfc(studentId, nfcId) {
 }
 
 // ─────────────────────────────────────────────
-// 출결결과 시트: 신청/명단 매칭 없이 NFC 태깅·수동 체크로 들어오는 기록을 그대로 적재하는 로그.
-// 헤더: 날짜, 요일, 타임, 학번, 이름, 반, 상태, 기록시각, 입력방식, 갱신시각
-// 같은 (날짜, 타임, 학번) 조합이 다시 들어오면 기존 행을 지우고 새로 써서 "수정"을 지원한다.
+// 웹앱응답 시트: 기존에 누적돼 있던 출결 기록과 같은 포맷(A~H)을 그대로 이어서 쓴다.
+// 헤더: 타임스탬프, 학번, 신청월, 요일, 타임, 실제날짜, 입력방식, 사전내용
+//   - 타임스탬프: 실제날짜 + 기록시각을 합친 시각 (NFC=실제 태깅 시각, 수동/전자칠판=타임 시작시각)
+//   - 타임: "1타임"/"2타임"/"3타임" (기존 데이터와 동일한 표기. 안드로이드 앱/전자칠판 UI에는
+//     "방과후"/"야간1"/"야간2" 같은 사람이 읽기 쉬운 이름으로 보이지만 저장은 항상 이 값으로 한다)
+//   - 입력방식: 기존처럼 방식+결과를 합쳐서 기록한다 (예: NFC출석, NFC지각, 수동결석, 전자칠판출석 등).
+//     8컬럼 포맷에 별도 "상태" 칸이 없어서, 상태는 이 컬럼 값의 접미사로 판별한다.
+//   - 사전내용: 더 이상 사유 제출 기능이 없으므로 항상 빈 값으로 남겨둔다 (기존 출석 기록 행과 동일).
+// 같은 (실제날짜, 타임, 학번) 조합이 다시 들어오면 기존 행을 지우고 새로 써서 "수정"을 지원한다.
 // → 날짜를 과거로 지정해서 보내면 지난 기록도 그대로 정정할 수 있다.
 // ─────────────────────────────────────────────
+var ATTENDANCE_STATUS_KEYWORDS_ = ['결석', '지각', '학사', '출석'];
+
+function encodeInputMethod_(inputType, status) {
+  return String(inputType || '') + String(status || '');
+}
+
+function decodeStatusFromInputMethod_(value) {
+  var text = String(value || '');
+  for (var i = 0; i < ATTENDANCE_STATUS_KEYWORDS_.length; i++) {
+    if (text.indexOf(ATTENDANCE_STATUS_KEYWORDS_[i]) !== -1) return ATTENDANCE_STATUS_KEYWORDS_[i];
+  }
+  return '';
+}
+
+function decodeMethodFromInputMethod_(value) {
+  return String(value || '').replace(/(결석|지각|학사|출석)$/, '');
+}
+
 function getAttendanceSheet_() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
-  var sheet = ss.getSheetByName('출결결과');
-  var header = ['날짜', '요일', '타임', '학번', '이름', '반', '상태', '기록시각', '입력방식', '갱신시각'];
+  var sheet = ss.getSheetByName('웹앱응답');
+  var header = ['타임스탬프', '학번', '신청월', '요일', '타임', '실제날짜', '입력방식', '사전내용'];
   if (!sheet) {
-    sheet = ss.insertSheet('출결결과');
+    sheet = ss.insertSheet('웹앱응답');
     sheet.getRange(1, 1, 1, header.length).setValues([header]);
   }
   return sheet;
@@ -121,27 +145,26 @@ function getAttendanceSheet_() {
 function deletePreexistingAttendanceRow_(sheet, dateText, slotName, studentId) {
   var data = sheet.getDataRange().getValues();
   for (var i = data.length - 1; i >= 1; i--) {
-    if (normalizeDateText(data[i][0]) === dateText &&
-        String(data[i][2]).trim() === slotName &&
-        cleanStudentId(data[i][3]) === studentId) {
+    if (normalizeDateText(data[i][5]) === dateText &&
+        String(data[i][4]).trim() === slotName &&
+        cleanStudentId(data[i][1]) === studentId) {
       sheet.deleteRow(i + 1);
     }
   }
 }
 
-// records: [{ studentNum, name, className, slotName, status, date(yyyy-MM-dd),
-//             recordTime(HH:mm:ss), inputType('NFC'|'수동') }]
+// records: [{ studentNum, slotName('1타임'|'2타임'|'3타임'), status('출석'|'지각'|'결석'|'학사'|'리셋'),
+//             date(yyyy-MM-dd), recordTime(HH:mm:ss), inputType('NFC'|'수동'|'전자칠판') }]
 function saveAndroidAttendance(records) {
   try {
     var sheet = getAttendanceSheet_();
-    var now = new Date();
     for (var i = 0; i < records.length; i++) {
       var rec = records[i];
       var studentId = cleanStudentId(rec.studentNum);
       var dateText = normalizeDateText(rec.date);
       var slotName = String(rec.slotName || '').trim();
       var status = String(rec.status || '').trim();
-      var recordTime = String(rec.recordTime || '').trim();
+      var recordTime = String(rec.recordTime || '00:00:00').trim();
 
       if (!studentId || !dateText || !slotName || !status) continue;
 
@@ -149,12 +172,12 @@ function saveAndroidAttendance(records) {
 
       if (status === '리셋') continue; // 리셋은 기존 행만 지우고 새로 쓰지 않음
 
-      var dateObj = parseDateKey(dateText);
+      var month = normalizeMonth(dateText);
       var day = dayOfWeekKo(dateText);
-      sheet.appendRow([
-        dateObj, day, slotName, studentId, rec.name || '', rec.className || '',
-        status, recordTime, rec.inputType || 'NFC', now
-      ]);
+      var timestamp = new Date(dateText + 'T' + recordTime);
+      var inputMethod = encodeInputMethod_(rec.inputType, status);
+
+      sheet.appendRow([timestamp, studentId, month, day, slotName, dateText, inputMethod, '']);
     }
     return { result: "success", message: "동기화 성공" };
   } catch (error) {
@@ -173,13 +196,14 @@ function getAttendanceByDate(dateText) {
     var list = [];
     for (var i = 1; i < data.length; i++) {
       var row = data[i];
-      if (normalizeDateText(row[0]) !== target) continue;
+      if (normalizeDateText(row[5]) !== target) continue;
+      var inputMethod = String(row[6] || '').trim();
       list.push({
-        studentNum: cleanStudentId(row[3]),
-        slotName: String(row[2] || '').trim(),
-        status: String(row[6] || '').trim(),
-        recordTime: String(row[7] || '').trim(),
-        inputType: String(row[8] || '').trim()
+        studentNum: cleanStudentId(row[1]),
+        slotName: String(row[4] || '').trim(),
+        status: decodeStatusFromInputMethod_(inputMethod),
+        recordTime: formatDateTimeKo(row[0]).split(' ').pop(),
+        inputType: decodeMethodFromInputMethod_(inputMethod)
       });
     }
     return { result: "success", data: list };
