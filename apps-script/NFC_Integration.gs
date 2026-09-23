@@ -4,6 +4,16 @@
 // 없으므로, 이 명부에 있는 학생이면 누구든 날짜·타임에 상관없이 자유롭게 출결을 기록한다.
 // ─────────────────────────────────────────────
 
+// NFC학생현황 시트의 D열은 '반'이 아니라 '등록여부'라서(현재 앱에서는 사용하지 않음),
+// 반은 학번 자릿수로 계산한다: 1번째 자리=학년, 4자리 학번은 다음 1자리, 5자리 이상은 다음 2자리가 반.
+// (Board_Handlers.gs의 inferGradeFromStudentId_ 와 같은 학번 규칙을 쓴다)
+function classNameFromStudentId_(studentId) {
+  var id = String(studentId || '').trim();
+  if (id.length === 4) return id.substring(1, 2) + '반';
+  if (id.length >= 5) return id.substring(1, 3).replace(/^0/, '') + '반';
+  return '';
+}
+
 function getStudentMasterList_() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var sheet = ss.getSheetByName("NFC학생현황");
@@ -16,9 +26,9 @@ function getStudentMasterList_() {
     var studentId = cleanStudentId(row[0]);
     var name = String(row[1] || "").trim();
     var nfcId = String(row[2] || "").trim();
-    var className = String(row[3] || "").trim();
+    // row[3](등록여부)은 반과 무관하므로 읽지 않는다.
+    var className = classNameFromStudentId_(studentId);
     if (!studentId || !name) continue;
-    if (className && className.indexOf('반') === -1) className += '반';
     students.push({ studentId: studentId, name: name, nfcId: nfcId, className: className });
   }
   students.sort(function (a, b) {
@@ -46,7 +56,8 @@ function addStudent(data) {
     var studentId = cleanStudentId(data.studentId);
     var name = String(data.name || "").trim();
     var nfcId = String(data.nfcId || "").trim();
-    var className = String(data.className || "").trim();
+    // data.className은 안드로이드 앱이 참고용으로 보내지만, 반은 학번으로 계산하므로 저장하지 않는다.
+    // D열(등록여부)은 건드리지 않고 비워둔다.
 
     if (!studentId || !name) return { result: "fail", message: "학번 또는 이름이 비어있음" };
 
@@ -57,7 +68,7 @@ function addStudent(data) {
       }
     }
 
-    sheet.appendRow([studentId, name, nfcId, className]);
+    sheet.appendRow([studentId, name, nfcId, '']);
     return { result: "success", message: name + " 학생이 등록되었습니다." };
   } catch (e) {
     return { result: "fail", message: e.toString() };
