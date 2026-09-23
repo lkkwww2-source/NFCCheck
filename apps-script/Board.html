@@ -60,8 +60,26 @@
   </main>
 
   <script>
-    let currentGrade = localStorage.getItem('boardGrade') || 1;
-    let currentClass = localStorage.getItem('boardClass') || 1;
+    // Apps Script 웹앱은 iframe 안에서 페이지를 띄우는 구조라, 브라우저/보안 설정에 따라
+    // localStorage 접근이 막혀 예외를 던질 수 있다. 여기서 막히면 스크립트 전체가 멈춰버리므로
+    // (시계조차 안 움직이는 증상) 반드시 try/catch로 감싸서 실패해도 기본값으로 계속 진행한다.
+    function safeGetItem(key, fallback) {
+      try {
+        return localStorage.getItem(key) || fallback;
+      } catch (e) {
+        return fallback;
+      }
+    }
+    function safeSetItem(key, value) {
+      try {
+        localStorage.setItem(key, value);
+      } catch (e) {
+        // 저장이 안 되더라도 화면 갱신 자체는 계속 진행한다.
+      }
+    }
+
+    let currentGrade = safeGetItem('boardGrade', 1);
+    let currentClass = safeGetItem('boardClass', 1);
     let currentSlot = '1타임'; // 💡 기본값을 1타임으로 변경
     let allStudents = [];
     let todayRecords = [];
@@ -162,8 +180,16 @@
     window.onload = () => {
       updateHeader();
       updateAdminLockUI();
-      google.script.run.withSuccessHandler(initApp).getInitialData();
+      google.script.run
+        .withSuccessHandler(initApp)
+        .withFailureHandler(showInitError)
+        .getInitialData();
     };
+
+    function showInitError(error) {
+      document.getElementById('student-grid').innerHTML =
+        `<div class="col-span-full flex items-center justify-center text-red-400 text-xl h-full">데이터를 불러오지 못했습니다: ${error && error.message ? error.message : error}</div>`;
+    }
 
     function initApp(data) {
       allStudents = data.students;
@@ -292,8 +318,8 @@
           if(newClass && !isNaN(newClass) && newClass >= 0 && newClass <= 9) {
             currentGrade = newGrade;
             currentClass = newClass;
-            localStorage.setItem('boardGrade', currentGrade);
-            localStorage.setItem('boardClass', currentClass);
+            safeSetItem('boardGrade', currentGrade);
+            safeSetItem('boardClass', currentClass);
             updateHeader();
             renderBoard();
             renderStats();
