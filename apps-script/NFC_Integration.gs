@@ -165,8 +165,7 @@ function deletePreexistingAttendanceRow_(sheet, dateText, slotName, studentId) {
 }
 
 // records: [{ studentNum, slotName('1타임'|'2타임'|'3타임'), status('출석'|'지각'|'결석'|'학사'|'리셋'),
-//             date(yyyy-MM-dd), recordTime(HH:mm:ss), inputType('NFC'|'수동'|'전자칠판'|'QR'|'담임웹'),
-//             reason(선택, H열 사전내용에 저장) }]
+//             date(yyyy-MM-dd), recordTime(HH:mm:ss), inputType('NFC'|'수동'|'전자칠판') }]
 function saveAndroidAttendance(records) {
   try {
     var sheet = getAttendanceSheet_();
@@ -189,7 +188,7 @@ function saveAndroidAttendance(records) {
       var timestamp = new Date(dateText + 'T' + recordTime);
       var inputMethod = encodeInputMethod_(rec.inputType, status);
 
-      sheet.appendRow([timestamp, studentId, month, day, slotName, dateText, inputMethod, rec.reason || '']);
+      sheet.appendRow([timestamp, studentId, month, day, slotName, dateText, inputMethod, '']);
     }
     return { result: "success", message: "동기화 성공" };
   } catch (error) {
@@ -215,8 +214,7 @@ function getAttendanceByDate(dateText) {
         slotName: String(row[4] || '').trim(),
         status: decodeStatusFromInputMethod_(inputMethod),
         recordTime: formatDateTimeKo(row[0]).split(' ').pop(),
-        inputType: decodeMethodFromInputMethod_(inputMethod),
-        reason: String(row[7] || '').trim()
+        inputType: decodeMethodFromInputMethod_(inputMethod)
       });
     }
     return { result: "success", data: list };
