@@ -135,6 +135,20 @@ data class DailyStatus(
     val night2: String = ""
 )
 
+// 태깅/수동 처리를 시도했지만 서버(스프레드시트)에 실제로 반영됐는지 아직 확인되지 않은 기록.
+// 새로고침/날짜 조회 시 스프레드시트의 실제 기록과 대조(reconcilePendingSends)해서, 반영이
+// 안 된 게 있으면 저장했던 그대로(날짜/시간/상태) 다시 전송한다.
+data class PendingRecord(
+    val id: String,
+    val studentNum: String,
+    val name: String,
+    val slotName: String,
+    val status: String,
+    val dateKey: String,
+    val recordTime: String,
+    val inputType: String
+)
+
 // 방과후/야간1/야간2 시간대 판정 — onNewIntent(NFC 태깅)와 StudentAttendanceScreen(안내 화면
 // 문구) 두 곳에서 각자 하드코딩되어 있던 시간대를 여기 하나로 모았다.
 private data class TimeWindow(
@@ -185,6 +199,8 @@ class MainActivity : ComponentActivity() {
     private val masterStudentList = mutableStateListOf<RosterStudent>()
     // selectedDate 기준 학번별 오늘 상태. 날짜를 바꾸면 서버에서 새로 받아와 통째로 교체한다.
     private val dailyStatusMap = mutableStateMapOf<String, DailyStatus>()
+    // 전송은 시도했지만 시트에 실제로 반영됐는지 아직 확인 못 한 기록들 (화면 상단에 건수 표시).
+    private val pendingSends = mutableStateListOf<PendingRecord>()
 
     private val teacherConfirmList = mutableStateListOf<TeacherLogItem>()
     private val studentManagementList = mutableStateListOf<StudentItem>()
@@ -402,7 +418,13 @@ class MainActivity : ComponentActivity() {
                         )
                         lastTagTime.value = System.currentTimeMillis()
                     }
-                    sendSingleLogToGoogleAsync(matchedStudent.studentNum, processedSlot, sendStatus, todayKey, "$timeString:00", "NFC")
+
+                    val nfcRecordTime = "$timeString:00"
+                    val nfcPendingId = "${matchedStudent.studentNum}|$processedSlot|$todayKey|${System.nanoTime()}"
+                    pendingSends.add(PendingRecord(nfcPendingId, matchedStudent.studentNum, matchedStudent.name, processedSlot, sendStatus, todayKey, nfcRecordTime, "NFC"))
+                    sendSingleLogToGoogleAsync(matchedStudent.studentNum, processedSlot, sendStatus, todayKey, nfcRecordTime, "NFC") { ok, _ ->
+                        if (ok) pendingSends.removeAll { it.id == nfcPendingId }
+                    }
                 } else {
                     Toast.makeText(this, "${matchedStudent.name}: 자습 교시 운영 외 시간대 태깅입니다.", Toast.LENGTH_LONG).show()
                     if (isStudentMode.value) {
@@ -486,6 +508,20 @@ class MainActivity : ComponentActivity() {
                     }) {
                         Text("오늘로 돌아가기", fontSize = 12.sp, color = Color(0xFF0984E3))
                     }
+                }
+            }
+
+            // 전송은 시도했지만 시트 반영이 아직 확인되지 않은 기록이 있으면 알려준다.
+            // 🔄 새로고침을 누르면 시트와 대조해서 자동으로 다시 전송된다.
+            val pendingForThisDate = pendingSends.count { it.dateKey == selectedDate.value }
+            if (pendingForThisDate > 0) {
+                Box(
+                    modifier = Modifier.fillMaxWidth().background(Color(0xFFFFF3CD)).padding(horizontal = 12.dp, vertical = 6.dp)
+                ) {
+                    Text(
+                        text = "⏳ 시트 반영 확인 중 ${pendingForThisDate}건 - 🔄 새로고침하면 누락된 기록을 자동으로 다시 보냅니다.",
+                        fontSize = 11.sp, color = Color(0xFF8A6D3B)
+                    )
                 }
             }
 
@@ -1821,6 +1857,7 @@ class MainActivity : ComponentActivity() {
     private fun updateStudentStatus(student: RosterStudent, slot: String, action: String) {
         val now = Calendar.getInstance()
         val timeString = String.format("%02d:%02d", now.get(Calendar.HOUR_OF_DAY), now.get(Calendar.MINUTE))
+        val recordTime = "$timeString:00"
 
         val finalStatus = when (action) {
             "출석" -> "출석 ($timeString)"
@@ -1842,9 +1879,14 @@ class MainActivity : ComponentActivity() {
         statusMessage.value = "🎯 [수동 변경] ${student.name} -> $slot [$action] 반영 (${selectedDate.value})"
 
         // '리셋'도 서버에 보내서 실제로 지운다. (과거 버그: 리셋은 화면에서만 지워지고 서버에는
-        // 전달되지 않아 새로고침하면 되돌아왔다.)
+        // 전달되지 않아 새로고침하면 되돌아왔다.) 전송 확인 전까지는 pendingSends에 남겨둬서
+        // 다음 새로고침/날짜 조회 때 시트와 대조해 누락됐으면 다시 보낸다.
         if (action in listOf("출석", "지각", "결석", "학사", "리셋")) {
-            sendSingleLogToGoogleAsync(student.studentNum, slot, action, selectedDate.value, "$timeString:00", "수동")
+            val pendingId = "${student.studentNum}|$slot|${selectedDate.value}|${System.nanoTime()}"
+            pendingSends.add(PendingRecord(pendingId, student.studentNum, student.name, slot, action, selectedDate.value, recordTime, "수동"))
+            sendSingleLogToGoogleAsync(student.studentNum, slot, action, selectedDate.value, recordTime, "수동") { ok, _ ->
+                if (ok) pendingSends.removeAll { it.id == pendingId }
+            }
         }
     }
 
@@ -1893,6 +1935,44 @@ class MainActivity : ComponentActivity() {
     }
 
     // 날짜를 바꿀 때마다 그 날짜의 기록을 서버에서 통째로 다시 받아온다.
+    // 화면에서 처리한 적 있는 기록(pendingSends) 중 이 날짜에 해당하는 것들을, 방금 서버에서
+    // 받아온 스프레드시트의 실제 상태(serverData)와 하나씩 대조한다. 있어야 할 기록이 없거나
+    // ('리셋'인데 아직 안 지워졌거나) 다르면, 그 자리에서 원래 보냈던 그대로 다시 전송한다.
+    // 🔄 새로고침, 날짜 변경 조회, "시트 전송" 모두 이 대조를 거치게 되어 있다.
+    private fun reconcilePendingSends(dateText: String, serverData: JSONArray?) {
+        val targets = pendingSends.filter { it.dateKey == dateText }
+        if (targets.isEmpty()) return
+
+        val serverStatusBySlot = mutableMapOf<String, String>() // "학번|슬롯" -> status
+        if (serverData != null) {
+            for (i in 0 until serverData.length()) {
+                val obj = serverData.optJSONObject(i) ?: continue
+                val key = "${obj.optString("studentNum")}|${obj.optString("slotName")}"
+                serverStatusBySlot[key] = obj.optString("status")
+            }
+        }
+
+        var resentCount = 0
+        targets.forEach { record ->
+            val key = "${record.studentNum}|${record.slotName}"
+            val serverStatus = serverStatusBySlot[key]
+            val verified = if (record.status == "리셋") serverStatus == null else serverStatus == record.status
+
+            if (verified) {
+                pendingSends.removeAll { it.id == record.id }
+            } else {
+                resentCount++
+                sendSingleLogToGoogleAsync(record.studentNum, record.slotName, record.status, record.dateKey, record.recordTime, record.inputType) { ok, _ ->
+                    if (ok) pendingSends.removeAll { it.id == record.id }
+                }
+            }
+        }
+
+        if (resentCount > 0) {
+            statusMessage.value = "🔁 시트에 빠져 있던 기록 ${resentCount}건을 다시 전송했습니다."
+        }
+    }
+
     private fun fetchAttendanceStatusForDate(dateText: String) {
         val queue = Volley.newRequestQueue(this)
         val requestUrl = "$googleSheetUrl?mode=GET_ATTENDANCE_BY_DATE&date=$dateText"
@@ -1923,6 +2003,9 @@ class MainActivity : ComponentActivity() {
                             }
                         }
                         statusMessage.value = if (dailyStatusMap.isEmpty()) "✅ $dateText 기록 없음 (명부 로드 완료)" else "✅ $dateText 기록 ${dailyStatusMap.size}건 로드 완료!"
+                        // 화면에서 처리했지만 시트 반영이 확인되지 않은 기록이 있으면, 방금 받아온
+                        // 시트의 실제 상태와 대조해서 누락된 것만 다시 전송한다.
+                        reconcilePendingSends(dateText, dataArray)
                     }
                 } catch (e: Exception) {
                     statusMessage.value = "⚠️ 출결 기록 해석 오류"
@@ -2209,6 +2292,9 @@ class MainActivity : ComponentActivity() {
                 if (jsonResponse.optString("result") == "success") {
                     statusMessage.value = "✅ 일괄 전송 성공: ${jsonRecords.length()}건 (${jsonResponse.optString("message")})"
                     Toast.makeText(this@MainActivity, "구글 시트에 출결 데이터가 저장되었습니다.", Toast.LENGTH_SHORT).show()
+                    // 화면에 보이는 모든 상태를 방금 통째로 다시 보냈으므로, 이 날짜의 미확인
+                    // 목록은 전부 해소된 것으로 본다.
+                    pendingSends.removeAll { it.dateKey == dateKey }
                 } else {
                     val msg = jsonResponse.optString("message", result)
                     statusMessage.value = "⚠️ 전송 실패: $msg"
