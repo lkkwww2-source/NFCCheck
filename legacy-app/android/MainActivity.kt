@@ -1855,8 +1855,19 @@ class MainActivity : ComponentActivity() {
     // (과거 버그: 서버가 날짜를 전혀 받지 않아 항상 "지금"으로 저장되어, 나중에 지난 기록을
     // 고쳐도 통계에 반영되지 않았다.)
     private fun updateStudentStatus(student: RosterStudent, slot: String, action: String) {
-        val now = Calendar.getInstance()
-        val timeString = String.format("%02d:%02d", now.get(Calendar.HOUR_OF_DAY), now.get(Calendar.MINUTE))
+        // 수동 처리는 "지금 누른 시각"이 아니라 그 차시의 기준시간으로 기록한다. 담임이 한참
+        // 지난 뒤에(예: 밤 9시에 방과후 기록을 정정) 눌러도, 그 순간의 시각이 아니라 방과후
+        // 출석/지각 기준시간이 그대로 남아야 하기 때문이다. NFC 태깅은 실제 태깅 시각을 그대로
+        // 쓴다 - 그래야 출결결과의 '차이시간(분)'(몇 분 늦었는지)이 의미를 유지한다.
+        val window = TIME_WINDOWS.find { it.slot == slot }
+        val baseMinutes = when (action) {
+            "지각" -> window?.lateRange?.first
+            else -> window?.onTimeRange?.first
+        } ?: run {
+            val now = Calendar.getInstance()
+            now.get(Calendar.HOUR_OF_DAY) * 60 + now.get(Calendar.MINUTE)
+        }
+        val timeString = formatMinutesClock(baseMinutes)
         val recordTime = "$timeString:00"
 
         val finalStatus = when (action) {
