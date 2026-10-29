@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html>
+<head>
+<base target="_top">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<style>
+body { font-family: Arial, sans-serif; background:#f4f6f8; padding:16px; }
+.box { max-width:760px; margin:auto; background:white; padding:20px; border-radius:16px; }
+h2 { text-align:center; }
+input, select, button {
+width:100%; padding:12px; font-size:17px; margin:6px 0; box-sizing:border-box;
+}
+button { border:0; border-radius:10px; background:#1a73e8; color:white; }
+.periodBox {
+border:2px solid #ddd; border-radius:14px; padding:14px; margin:16px 0;
+}
+.periodTitle {
+font-size:20px; font-weight:bold; margin-bottom:8px;
+}
+.summary {
+background:#f1f3f4; padding:10px; border-radius:10px; margin-bottom:10px;
+}
+.student {
+border:1px solid #ddd; border-radius:10px; padding:12px; margin:10px 0;
+}
+.name { font-size:18px; font-weight:bold; }
+.small { color:#666; font-size:14px; }
+.none { color:#777; padding:10px; }
+.markAbsentBtn { background:#c5221f; margin-top:10px; }
+</style>
+</head>
+<body>
+<div class="box">
+<h2>담임 출결 확인</h2>
+
+<input type="date" id="dateInput">
+
+<select id="classInput">
+<option value="1반">1반</option>
+<option value="2반">2반</option>
+<option value="3반">3반</option>
+<option value="4반">4반</option>
+<option value="5반">5반</option>
+<option value="6반">6반</option>
+<option value="7반">7반</option>
+<option value="8반">8반</option>
+<option value="9반">9반</option>
+</select>
+
+<button onclick="loadDaily()">하루치 조회</button>
+
+<div id="list"></div>
+
+<button onclick="saveApprovals()">담임 확인 저장</button>
+<div id="msg"></div>
+</div>
+
+<script>
+let dailyData = [];
+
+window.onload = function() {
+  document.getElementById('dateInput').valueAsDate = new Date();
+
+  document.getElementById('list').innerHTML =
+    '<div class="none">날짜와 반을 선택한 뒤 조회 버튼을 누르세요.</div>';
+};
+
+function loadDaily() {
+const date = document.getElementById('dateInput').value;
+const cls = document.getElementById('classInput').value;
+
+document.getElementById('list').innerHTML = '조회 중...';
+
+google.script.run
+.withSuccessHandler(function(data) {
+dailyData = data;
+renderDaily();
+})
+.getTeacherDailySummary(date, cls);
+}
+
+function renderDaily() {
+  const area = document.getElementById('list');
+
+  area.innerHTML = dailyData.map((p, pIdx) => {
+    const present = p.presentStudents || [];
+    const memo = p.memoStudents || [];
+    const absent = p.absentStudents || [];
+
+    const presentHtml = present.length === 0
+      ? '<div class="none">출석 학생 없음</div>'
+      : present.map(s => `
+          <div class="student">
+            <div class="name">✅ ${s.studentId} ${s.name}</div>
+            <div class="small">${s.className} / ${s.period} / ${s.type}</div>
+          </div>
+        `).join('');
+
+    const memoHtml = memo.length === 0
+      ? '<div class="none">사전제출 학생 없음</div>'
+      : memo.map((s, sIdx) => {
+          const id = `memo_${pIdx}_${sIdx}`;
+          return `
+            <div class="student">
+              <div class="name">🟡 ${s.studentId} ${s.name}</div>
+              <div class="small">${s.className} / ${s.period} / ${s.type}</div>
+              <div class="small" style="color:#c5221f; margin-top:4px;">학생 사전내용: ${s.memo}</div>
+              <label>
+                <input type="checkbox" id="chk_${id}" ${s.approved ? 'checked' : ''}>
+                담임허락 또는 확인 완료
+              </label>
+              <select id="reason_${id}">
+                <option value="">사유 선택</option>
+                <option value="담임허락" ${s.reason==='담임허락'?'selected':''}>담임허락</option>
+                <option value="학부모확인" ${s.reason==='학부모확인'?'selected':''}>학부모확인</option>
+                <option value="병원진료" ${s.reason==='병원진료'?'selected':''}>병원진료</option>
+                <option value="조퇴" ${s.reason==='조퇴'?'selected':''}>조퇴</option>
+                <option value="학원보강" ${s.reason==='학원보강'?'selected':''}>학원보강</option>
+                <option value="기타" ${s.reason==='기타'?'selected':''}>기타</option>
+              </select>
+            </div>
+          `;
+        }).join('');
+
+    const absentHtml = absent.length === 0
+      ? '<div class="none">결석 없음</div>'
+      : absent.map((s, sIdx) => {
+          const id = `absent_${pIdx}_${sIdx}`;
+          return `
+            <div class="student">
+              <div class="name">🔴 ${s.studentId} ${s.name}</div>
+              <div class="small">${s.className} / ${s.period} / ${s.type}</div>
+              <label>
+                <input type="checkbox" id="chk_${id}" ${s.approved ? 'checked' : ''}>
+                담임허락 또는 확인 완료
+              </label>
+              <select id="reason_${id}">
+                <option value="">사유 선택</option>
+                <option value="담임허락" ${s.reason==='담임허락'?'selected':''}>담임허락</option>
+                <option value="학부모확인" ${s.reason==='학부모확인'?'selected':''}>학부모확인</option>
+                <option value="병원진료" ${s.reason==='병원진료'?'selected':''}>병원진료</option>
+                <option value="조퇴" ${s.reason==='조퇴'?'selected':''}>조퇴</option>
+                <option value="학원보강" ${s.reason==='학원보강'?'selected':''}>학원보강</option>
+                <option value="기타" ${s.reason==='기타'?'selected':''}>기타</option>
+              </select>
+            </div>
+          `;
+        }).join('');
+
+    return `
+      <div class="periodBox">
+        <div class="periodTitle">${p.period}</div>
+        <div class="summary">
+          신청 ${p.applicantCount}명 /
+          출석 ${p.presentCount}명 /
+          사전제출 ${p.memoCount}명 /
+          결석 ${p.absenceCount}명
+        </div>
+
+        <h3>✅ 출석 학생</h3>
+        ${presentHtml}
+
+        <h3>🟡 사전제출 학생</h3>
+        ${memoHtml}
+
+        <h3>🔴 결석</h3>
+        ${absentHtml}
+
+        <button class="markAbsentBtn" onclick="markAbsent(${pIdx})">➕ 결석 처리 추가</button>
+      </div>
+    `;
+  }).join('');
+}
+
+// 참여명단이 없어진 뒤로는 결석을 자동으로 판정하지 않는다. 담임이 학번을 직접 입력해서
+// 결석으로 지정해야만 결석 기록이 남는다. (사유는 선택사항)
+function markAbsent(pIdx) {
+  const p = dailyData[pIdx];
+  const studentId = prompt('결석 처리할 학번을 입력하세요.');
+  if (!studentId) return;
+  const reason = prompt('결석 사유를 입력하세요. (선택사항, 비워두면 빈칸으로 저장됩니다)') || '';
+  const date = document.getElementById('dateInput').value;
+  const cls = document.getElementById('classInput').value;
+
+  document.getElementById('msg').innerText = '결석 처리 중...';
+
+  google.script.run
+    .withSuccessHandler(function(result) {
+      document.getElementById('msg').innerText = result.message;
+      if (result.result === 'success') loadDaily();
+    })
+    .withFailureHandler(function(error) {
+      document.getElementById('msg').innerText = '오류 발생\n' + error.message;
+    })
+    .markAbsentByTeacher(date, p.period, cls, studentId, reason);
+}
+
+function saveApprovals() {
+  const items = [];
+
+  dailyData.forEach((p, pIdx) => {
+    const memoStudents = p.memoStudents || [];
+    const absentStudents = p.absentStudents || [];
+
+    memoStudents.forEach((s, sIdx) => {
+      const id = `memo_${pIdx}_${sIdx}`;
+      s.approved = document.getElementById(`chk_${id}`).checked;
+      s.reason = document.getElementById(`reason_${id}`).value;
+      items.push(s);
+    });
+
+    absentStudents.forEach((s, sIdx) => {
+      const id = `absent_${pIdx}_${sIdx}`;
+      s.approved = document.getElementById(`chk_${id}`).checked;
+      s.reason = document.getElementById(`reason_${id}`).value;
+      items.push(s);
+    });
+  });
+
+  document.getElementById('msg').innerText = '저장 중...';
+
+  google.script.run
+    .withSuccessHandler(function(msg) {
+      document.getElementById('msg').innerText = msg;
+      loadDaily();
+    })
+    .saveTeacherApprovals(items);
+}
+</script>
+</body>
+</html>

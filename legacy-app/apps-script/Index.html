@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <base target="_top">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background: #f4f6f8;
+      padding: 24px;
+    }
+
+    .box {
+      max-width: 420px;
+      margin: auto;
+      background: white;
+      padding: 24px;
+      border-radius: 18px;
+      box-shadow: 0 4px 16px rgba(0, 0, 0, .15);
+      text-align: center;
+    }
+
+    h2 {
+      margin-top: 0;
+    }
+
+    input,
+    select,
+    textarea {
+      width: 100%;
+      padding: 14px;
+      font-size: 18px;
+      box-sizing: border-box;
+      margin: 8px 0;
+    }
+
+    textarea {
+      height: 90px;
+      resize: none;
+    }
+
+    button {
+      width: 100%;
+      padding: 16px;
+      font-size: 20px;
+      border: 0;
+      border-radius: 12px;
+      margin-top: 10px;
+    }
+
+    .primary {
+      background: #1a73e8;
+      color: white;
+    }
+
+    .secondary {
+      background: #ddd;
+      color: #222;
+    }
+
+    .danger {
+      background: #fce8e6;
+      color: #c5221f;
+    }
+
+    .msg {
+      margin-top: 18px;
+      font-size: 18px;
+      white-space: pre-line;
+    }
+
+    .small {
+      margin-top: 16px;
+      color: #777;
+      font-size: 14px;
+    }
+
+    .hidden {
+      display: none;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="box">
+    <h2 onclick="teacherResetClick()">운호고 야자출결</h2>
+
+    <div id="registerArea">
+      <p>처음 한 번만 학번을 저장하세요.</p>
+      <input id="studentIdInput" type="number" placeholder="학번 예: 1101">
+      <button class="primary" onclick="saveStudentId()">내 학번 저장</button>
+    </div>
+
+    <div id="mainArea" class="hidden">
+      <p>저장된 학번</p>
+      <h2 id="savedStudentId"></h2>
+
+      <button class="primary" onclick="submitAttendance()">출석하기</button>
+      <button class="secondary" onclick="showReasonArea()">사유 제출</button>
+
+      <div id="reasonArea" class="hidden">
+        <hr>
+        <p>불참/지각/타임 변경 등 사유를 제출하세요.</p>
+
+        <input type="date" id="reasonDate">
+
+        <div id="periodArea" style="text-align:left; margin:10px 0;">
+
+          <label>
+    <input type="checkbox"
+           name="reasonPeriod"
+           value="1타임"
+           checked>
+    1타임
+  </label>
+
+          <br>
+
+          <label>
+    <input type="checkbox"
+           name="reasonPeriod"
+           value="2타임"
+           checked>
+    2타임
+  </label>
+
+          <br>
+
+          <label>
+    <input type="checkbox"
+           name="reasonPeriod"
+           value="3타임"
+           checked>
+    3타임
+  </label>
+
+        </div>
+
+        <textarea id="reasonText" placeholder="예: 병원진료로 1타임 불참, 학원으로 2타임 불참, 3타임부터 참석 예정"></textarea>
+
+        <button class="danger" onclick="submitReason()">사유 제출하기</button>
+      </div>
+    </div>
+
+    <div class="msg" id="message"></div>
+    <div class="small">출석하기는 실제 입실했을 때만 누르세요.</div>
+  </div>
+
+  <script>
+    window.onload = function() {
+    const saved = localStorage.getItem('studentId');
+    if (saved) showMain(saved);
+
+    const today = new Date();
+    const y = today.getFullYear();
+    const m = String(today.getMonth() + 1).padStart(2, '0');
+    const d = String(today.getDate()).padStart(2, '0');
+    document.getElementById('reasonDate').value = `${y}-${m}-${d}`;
+  };
+
+  function saveStudentId() {
+    const id = document.getElementById('studentIdInput').value.trim();
+    if (!id) {
+      alert('학번을 입력하세요.');
+      return;
+    }
+
+    localStorage.setItem('studentId', id);
+    showMain(id);
+  }
+
+  function showMain(id) {
+    document.getElementById('registerArea').style.display = 'none';
+    document.getElementById('mainArea').classList.remove('hidden');
+    document.getElementById('savedStudentId').innerText = id;
+    document.getElementById('message').innerText = '';
+  }
+
+  function submitAttendance() {
+    const id = localStorage.getItem('studentId');
+
+    if (!id) {
+      alert('학번을 먼저 저장하세요.');
+      return;
+    }
+
+    document.getElementById('message').innerText = '출석 기록 중...';
+
+    google.script.run
+      .withSuccessHandler(function(result) {
+        if (!result.success) {
+          document.getElementById('message').innerText =
+            '출석 불가\n' + result.message + '\n' + result.period;
+          return;
+        }
+
+        document.getElementById('message').innerText =
+          '출석 완료\n' + result.time + '\n' + result.period;
+      })
+      .withFailureHandler(function(error) {
+        document.getElementById('message').innerText =
+          '오류 발생\n' + error.message;
+      })
+      .submitWebAttendance(id);
+  }
+
+  function showReasonArea() {
+    document.getElementById('reasonArea').classList.toggle('hidden');
+  }
+
+  function submitReason() {
+    const id = localStorage.getItem('studentId');
+    const date = document.getElementById('reasonDate').value;
+    const checkedPeriods =
+  Array.from(
+    document.querySelectorAll(
+      'input[name="reasonPeriod"]:checked'
+    )
+  ).map(el => el.value);
+    const reason = document.getElementById('reasonText').value.trim();
+
+    if (!id) {
+      alert('학번을 먼저 저장하세요.');
+      return;
+    }
+
+    if (!date ||
+    checkedPeriods.length === 0 ||
+    !reason) {
+      alert('날짜, 타임, 사유를 모두 입력하세요.');
+      return;
+    }
+
+    document.getElementById('message').innerText = '사유 제출 중...';
+
+    google.script.run
+      .withSuccessHandler(function(result) {
+        document.getElementById('message').innerText =
+          '사유 제출 완료\n' + result.period;
+
+        document.getElementById('reasonText').value = '';
+        document.getElementById('reasonArea').classList.add('hidden');
+      })
+      .withFailureHandler(function(error) {
+        document.getElementById('message').innerText =
+          '오류 발생\n' + error.message;
+      })
+      .submitWebReason(
+  id,
+  date,
+  checkedPeriods,
+  reason
+);
+  }
+
+  function teacherResetClick() {
+    const pw = prompt('교사 비밀번호');
+
+    google.script.run
+      .withSuccessHandler(function(ok) {
+        if (!ok) {
+          alert('비밀번호 오류');
+          return;
+        }
+
+        localStorage.removeItem('studentId');
+        alert('학번이 초기화되었습니다.');
+        location.reload();
+      })
+      .checkTeacherPassword(pw);
+  }
+  </script>
+</body>
+
+</html>

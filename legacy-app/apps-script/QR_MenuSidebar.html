@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <meta charset="UTF-8">
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      padding: 14px;
+      background: #f8fafc;
+      color: #202124;
+    }
+    h2 {
+      margin: 0 0 6px;
+      font-size: 20px;
+    }
+    .sub {
+      margin: 0 0 14px;
+      color: #5f6368;
+      font-size: 13px;
+      line-height: 1.4;
+    }
+    .section {
+      background: #fff;
+      border: 1px solid #e0e0e0;
+      border-radius: 12px;
+      padding: 12px;
+      margin-bottom: 12px;
+      box-shadow: 0 1px 3px rgba(60,64,67,.12);
+    }
+    .section-title {
+      font-weight: 700;
+      margin-bottom: 8px;
+      color: #174ea6;
+    }
+    button {
+      width: 100%;
+      border: 0;
+      border-radius: 8px;
+      padding: 10px 12px;
+      margin: 4px 0;
+      background: #1a73e8;
+      color: #fff;
+      font-size: 14px;
+      cursor: pointer;
+      text-align: left;
+    }
+    button.secondary { background: #5f6368; }
+    button.green { background: #188038; }
+    button.orange { background: #f29900; color: #202124; }
+    button:disabled { opacity: .6; cursor: wait; }
+    #status {
+      white-space: pre-wrap;
+      background: #202124;
+      color: #e8eaed;
+      border-radius: 8px;
+      padding: 10px;
+      min-height: 56px;
+      font-size: 12px;
+      line-height: 1.5;
+    }
+  </style>
+</head>
+<body>
+  <h2>QR/NFC 출결관리</h2>
+  <p class="sub">시트를 프로그램처럼 쓰기 위한 관리 메뉴입니다. 실행 결과는 아래 상태창과 시트 우측 하단 토스트로 표시됩니다.</p>
+
+  <div class="section">
+    <div class="section-title">출결 갱신</div>
+    <button class="green" onclick="run('menuRefreshAllAttendance')">1. 전체 갱신</button>
+    <button onclick="run('menuSyncAttendance')">2. 출결결과 갱신</button>
+    <button onclick="run('menuUpdateTeacherApprovalCheck')">3. 담임허락체크 갱신</button>
+    <button onclick="run('menuRefreshYajaParticipationAnalysis')">4. 야자참여분석 갱신</button>
+  </div>
+
+  <div class="section">
+    <div class="section-title">웹앱 / NFC 점검</div>
+    <button onclick="run('menuCreateWebAppLinksSheet')">웹앱 주소 탭 만들기/갱신</button>
+    <button onclick="run('menuCheckNfcRoster')">NFC 학생명단 연동 점검</button>
+    <button onclick="run('menuCheckTodayAttendanceStatus')">오늘 출석상태 API 점검</button>
+  </div>
+
+  <div class="section">
+    <div class="section-title">자동 실행 / 탭 정리</div>
+    <button class="orange" onclick="run('menuInstallScheduledAttendanceTrigger')">자동갱신 트리거 설치/갱신</button>
+    <button class="secondary" onclick="run('menuDeleteScheduledAttendanceTriggers')">자동갱신 트리거 삭제</button>
+    <button class="secondary" onclick="run('menuOrganizeQrSheets')">주요 탭 순서 정리</button>
+    <button class="secondary" onclick="run('menuHideHelperQrSheets')">원본/보조 탭 숨기기</button>
+    <button class="secondary" onclick="run('menuShowAllQrSheets')">숨김 탭 모두 보이기</button>
+  </div>
+
+  <div class="section">
+    <div class="section-title">실행 상태</div>
+    <div id="status">대기 중</div>
+  </div>
+
+  <script>
+    function setButtons(disabled) {
+      document.querySelectorAll('button').forEach(function (btn) {
+        btn.disabled = disabled;
+      });
+    }
+
+    function setStatus(text) {
+      document.getElementById('status').textContent = text;
+    }
+
+    function run(functionName) {
+      setButtons(true);
+      setStatus('실행 중: ' + functionName + ' ...');
+      google.script.run
+        .withSuccessHandler(function (result) {
+          var message = result && result.message ? result.message : '완료';
+          setStatus((result && result.success === false ? '실패: ' : '완료: ') + message);
+          setButtons(false);
+        })
+        .withFailureHandler(function (error) {
+          setStatus('오류: ' + (error && error.message ? error.message : error));
+          setButtons(false);
+        })[functionName]();
+    }
+  </script>
+</body>
+</html>
