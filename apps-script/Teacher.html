@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html>
+<head>
+<base target="_top">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<style>
+body { font-family: Arial, sans-serif; background:#f4f6f8; padding:16px; }
+.box { max-width:760px; margin:auto; background:white; padding:20px; border-radius:16px; }
+h2 { text-align:center; }
+input, select, button {
+  width:100%; padding:12px; font-size:17px; margin:6px 0; box-sizing:border-box;
+}
+button { border:0; border-radius:10px; background:#1a73e8; color:white; }
+button:disabled { background:#9fc1f5; }
+.periodBox {
+  border:2px solid #ddd; border-radius:14px; padding:14px; margin:16px 0;
+}
+.periodTitle {
+  font-size:20px; font-weight:bold; margin-bottom:8px;
+}
+.summary {
+  background:#f1f3f4; padding:10px; border-radius:10px; margin-bottom:10px;
+}
+.student {
+  border:1px solid #ddd; border-radius:10px; padding:12px; margin:10px 0;
+  display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap;
+}
+.name { font-size:18px; font-weight:bold; }
+.small { color:#666; font-size:14px; }
+.none { color:#777; padding:10px; }
+.statusBadge {
+  padding:6px 10px; border-radius:999px; font-size:13px; font-weight:bold; white-space:nowrap;
+}
+.st-출석 { background:#e6f4ea; color:#137333; }
+.st-지각 { background:#fef7e0; color:#b06000; }
+.st-결석 { background:#fce8e6; color:#c5221f; }
+.st-학사 { background:#e8f0fe; color:#1a73e8; }
+.st-미기록 { background:#f1f3f4; color:#777; }
+.absentBtn {
+  width:auto; padding:8px 12px; font-size:13px; background:#fce8e6; color:#c5221f; margin:0;
+}
+.resetBtn {
+  width:auto; padding:8px 12px; font-size:13px; background:#f1f3f4; color:#555; margin:0;
+}
+.errorBox { color:#c5221f; text-align:center; padding:20px; }
+</style>
+</head>
+<body>
+<div class="box">
+<h2>담임 출결 확인</h2>
+
+<input type="date" id="dateInput">
+
+<select id="classInput">
+<option value="1반">1반</option>
+<option value="2반">2반</option>
+<option value="3반">3반</option>
+<option value="4반">4반</option>
+<option value="5반">5반</option>
+<option value="6반">6반</option>
+<option value="7반">7반</option>
+<option value="8반">8반</option>
+<option value="9반">9반</option>
+</select>
+
+<button id="loadBtn" onclick="loadDaily()">조회</button>
+
+<div id="list"></div>
+</div>
+
+<script>
+let dailyData = [];
+let currentDate = '';
+let currentClass = '';
+
+window.onload = function() {
+  document.getElementById('dateInput').valueAsDate = new Date();
+
+  document.getElementById('list').innerHTML =
+    '<div class="none">날짜와 반을 선택한 뒤 조회 버튼을 누르세요.</div>';
+};
+
+function loadDaily() {
+  currentDate = document.getElementById('dateInput').value;
+  currentClass = document.getElementById('classInput').value;
+
+  const loadBtn = document.getElementById('loadBtn');
+  loadBtn.disabled = true;
+  document.getElementById('list').innerHTML = '조회 중...';
+
+  google.script.run
+    .withSuccessHandler(function(data) {
+      loadBtn.disabled = false;
+      if (data && data.error) {
+        document.getElementById('list').innerHTML =
+          '<div class="errorBox">조회 중 오류: ' + data.error + '</div>';
+        return;
+      }
+      dailyData = data;
+      renderDaily();
+    })
+    .withFailureHandler(function(error) {
+      // ⚠️ 실패가 조용히 묻히지 않도록 화면에 반드시 표시한다.
+      loadBtn.disabled = false;
+      document.getElementById('list').innerHTML =
+        '<div class="errorBox">서버 통신 오류: ' + error.message + '<br>다시 시도해주세요.</div>';
+    })
+    .getTeacherDailySummary(currentDate, currentClass);
+}
+
+function renderDaily() {
+  const area = document.getElementById('list');
+
+  area.innerHTML = dailyData.map((p) => {
+    const counts = { '출석': 0, '지각': 0, '결석': 0, '학사': 0, '미기록': 0 };
+    p.students.forEach(s => { counts[s.status] = (counts[s.status] || 0) + 1; });
+
+    const studentsHtml = p.students.map(s => {
+      const canMarkAbsent = s.status === '미기록';
+      const canReset = s.status !== '미기록';
+      let actionsHtml = '';
+      if (canMarkAbsent) {
+        actionsHtml += `<button class="absentBtn" onclick="markAbsent('${s.studentId}','${p.slotName}','${s.name}')">결석 처리</button>`;
+      }
+      if (canReset) {
+        actionsHtml += `<button class="resetBtn" onclick="resetStatus('${s.studentId}','${p.slotName}')">초기화</button>`;
+      }
+
+      return `
+        <div class="student">
+          <div>
+            <div class="name">${s.studentId} ${s.name}</div>
+            <div class="small">${s.recordTime ? s.recordTime + ' · ' : ''}${s.inputType || ''}</div>
+            ${s.reason ? `<div class="small" style="color:#c5221f;">사유: ${s.reason}</div>` : ''}
+          </div>
+          <div style="display:flex; align-items:center; gap:8px;">
+            <span class="statusBadge st-${s.status}">${s.status}</span>
+            ${actionsHtml}
+          </div>
+        </div>
+      `;
+    }).join('');
+
+    return `
+      <div class="periodBox">
+        <div class="periodTitle">${p.slotName}</div>
+        <div class="summary">
+          출석 ${counts['출석']}명 / 지각 ${counts['지각']}명 /
+          결석 ${counts['결석']}명 / 학사 ${counts['학사']}명 /
+          미기록 ${counts['미기록']}명
+        </div>
+        ${studentsHtml}
+      </div>
+    `;
+  }).join('');
+}
+
+function markAbsent(studentId, slotName, name) {
+  const reason = prompt(name + ' 학생을 결석 처리합니다.\n사유(선택, 비워두면 그냥 결석 처리):', '');
+  if (reason === null) return; // 취소
+
+  google.script.run
+    .withSuccessHandler(function() {
+      loadDaily();
+    })
+    .withFailureHandler(function(error) {
+      alert('결석 처리 실패: ' + error.message);
+    })
+    .markAbsentFromTeacherWeb(studentId, currentDate, slotName, reason);
+}
+
+function resetStatus(studentId, slotName) {
+  if (!confirm('이 학생의 기록을 미기록 상태로 되돌릴까요?')) return;
+
+  google.script.run
+    .withSuccessHandler(function() {
+      loadDaily();
+    })
+    .withFailureHandler(function(error) {
+      alert('초기화 실패: ' + error.message);
+    })
+    .resetAttendanceFromTeacherWeb(studentId, currentDate, slotName);
+}
+</script>
+</body>
+</html>

@@ -79,8 +79,9 @@ import java.util.Locale
 // NFC 태깅 = 이 창구 안에 들어온 실제 시각을 그대로 기록.
 // 수동 체크 = 신청/명단 개념이 없어졌으므로 fixedStartTime(타임 시작시각)으로 고정 기록.
 //
-// slotName은 기존 '웹앱응답' 시트 및 전자칠판(Board.html)과 동일하게 "1타임"/"2타임"/"3타임"으로
-// 저장/동기화한다. "방과후"/"야간1"/"야간2"는 앱 화면에 보여줄 때만 쓰는 짧은 이름(shortLabel)이다.
+// slotName은 기존 '웹앱응답' 시트 및 QR 자가출석 웹페이지(Web_Student.gs)와 동일하게
+// "1타임"/"2타임"/"3타임"으로 저장/동기화한다. "방과후"/"야간1"/"야간2"는 앱 화면에
+// 보여줄 때만 쓰는 짧은 이름(shortLabel)이다.
 // ─────────────────────────────────────────────
 data class PeriodDef(
     val slotName: String,
@@ -105,9 +106,6 @@ fun resolveNfcPeriod(totalMinutes: Int): Pair<PeriodDef, String>? {
     }
     return null
 }
-
-// 학번 첫 자리 = 학년 (전자칠판 Board_Handlers.gs의 inferGradeFromStudentId_ 와 동일한 규칙)
-fun studentGrade(studentId: String): String = studentId.firstOrNull()?.toString() ?: ""
 
 data class StudentItem(
     val studentId: String,
@@ -159,8 +157,6 @@ class MainActivity : ComponentActivity() {
     private var pendingIntent: PendingIntent? = null
 
     private var currentMenu = mutableStateOf("HOME")
-    // 전자칠판(Board.html)과 동일하게 학년을 먼저 고르고, 그 안에서 반을 고르는 구조.
-    private var selectedGrade = mutableStateOf("1")
     private var selectedClass = mutableStateOf("전체")
     private var selectedDate = mutableStateOf("")
     private var statusMessage = mutableStateOf("🔄 구글 시트 데이터 로딩을 대기하고 있습니다...")
@@ -176,7 +172,6 @@ class MainActivity : ComponentActivity() {
     // 이번 세션에서 시도한 전송의 동기화 상태(시각적 피드백용): key = "학번|타임"
     private val syncStateMap = mutableStateMapOf<String, SyncState>()
 
-    private var managementSelectedGrade = mutableStateOf("1")
     private var managementSelectedClass = mutableStateOf(1)
 
     private var isWaitingNfcForAdd = mutableStateOf(false)
@@ -361,8 +356,7 @@ class MainActivity : ComponentActivity() {
             val todayText = SimpleDateFormat("yyyy-MM-dd", Locale.KOREAN).format(now.time)
 
             if (matchedStudent != null) {
-                // 여러 학년이 섞일 수 있어 "3반"만으로는 헷갈리므로 학년을 붙여서 표시한다.
-                val displayClass = "${studentGrade(matchedStudent.studentId)}-${matchedStudent.className}"
+                val displayClass = "1-${matchedStudent.className}"
                 val periodResult = resolveNfcPeriod(hour * 60 + minute)
 
                 if (periodResult != null) {
@@ -481,31 +475,6 @@ class MainActivity : ComponentActivity() {
                     .horizontalScroll(rememberScrollState())
                     .padding(vertical = 2.dp)
             ) {
-                listOf("1", "2", "3").forEach { grade ->
-                    val isSelected = selectedGrade.value == grade
-                    Box(
-                        modifier = Modifier
-                            .clickable { selectedGrade.value = grade }
-                            .padding(horizontal = 14.dp, vertical = 8.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = "${grade}학년",
-                            fontWeight = if (isSelected) FontWeight.ExtraBold else FontWeight.Medium,
-                            color = if (isSelected) Color(0xFF0984E3) else Color.Gray,
-                            fontSize = 14.sp
-                        )
-                    }
-                }
-            }
-
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(Color.White)
-                    .horizontalScroll(rememberScrollState())
-                    .padding(vertical = 2.dp)
-            ) {
                 val classList = listOf("전체", "1반", "2반", "3반", "4반", "5반", "6반", "7반", "8반", "9반")
                 classList.forEach { cls ->
                     val isSelected = selectedClass.value == cls
@@ -526,12 +495,11 @@ class MainActivity : ComponentActivity() {
             }
 
             val filteredStudents = studentList.filter {
-                studentGrade(it.studentId) == selectedGrade.value &&
-                    (selectedClass.value == "전체" || it.className == selectedClass.value)
+                selectedClass.value == "전체" || it.className == selectedClass.value
             }.sortedBy { it.studentId }
 
             Text(
-                text = "📊 ${selectedDate.value} ${selectedGrade.value}학년 ${selectedClass.value} 명단 (총 ${filteredStudents.size}명)",
+                text = "📊 ${selectedDate.value} ${selectedClass.value} 명단 (총 ${filteredStudents.size}명)",
                 fontSize = 13.sp, fontWeight = FontWeight.Bold,
                 modifier = Modifier.padding(start = 16.dp, top = 8.dp, bottom = 4.dp),
                 color = Color.Gray
@@ -1054,12 +1022,8 @@ class MainActivity : ComponentActivity() {
 
     @Composable
     fun IndividualStatsContent(slots: List<String>, students: List<MonthlySlotEntry>) {
-        // className이 이제 "1-3반"(학년-반) 형태이므로 학년 → 반 순서로 정렬한다.
         val classList = students.map { it.className }.distinct().sortedWith(
-            compareBy(
-                { it.substringBefore("-").toIntOrNull() ?: 99 },
-                { it.substringAfter("-").replace("반", "").toIntOrNull() ?: 99 }
-            )
+            compareBy { it.replace("반", "").toIntOrNull() ?: 99 }
         )
         var selectedClassTab by remember { mutableStateOf(classList.firstOrNull() ?: "") }
 
@@ -1331,7 +1295,7 @@ class MainActivity : ComponentActivity() {
         }
 
         val filteredStudents = studentList
-            .filter { studentGrade(it.studentId) == managementSelectedGrade.value && it.className == "${managementSelectedClass.value}반" }
+            .filter { it.className == "${managementSelectedClass.value}반" }
             .sortedBy { it.studentId }
 
         Column(modifier = Modifier.fillMaxSize()) {
@@ -1357,31 +1321,6 @@ class MainActivity : ComponentActivity() {
                     .horizontalScroll(rememberScrollState())
                     .padding(vertical = 2.dp)
             ) {
-                listOf("1", "2", "3").forEach { grade ->
-                    val isSelected = managementSelectedGrade.value == grade
-                    Box(
-                        modifier = Modifier
-                            .clickable { managementSelectedGrade.value = grade }
-                            .padding(horizontal = 14.dp, vertical = 8.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = "${grade}학년",
-                            fontWeight = if (isSelected) FontWeight.ExtraBold else FontWeight.Medium,
-                            color = if (isSelected) Color(0xFF0984E3) else Color.Gray,
-                            fontSize = 14.sp
-                        )
-                    }
-                }
-            }
-
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(Color.White)
-                    .horizontalScroll(rememberScrollState())
-                    .padding(vertical = 2.dp)
-            ) {
                 listOf(1, 2, 3, 4, 5, 6, 7, 8, 9).forEach { cls ->
                     val isSelected = managementSelectedClass.value == cls
                     Box(
@@ -1391,7 +1330,7 @@ class MainActivity : ComponentActivity() {
                         contentAlignment = Alignment.Center
                     ) {
                         Text(
-                            text = "${managementSelectedGrade.value}-$cls",
+                            text = "1-$cls",
                             fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
                             color = if (isSelected) Color(0xFF0984E3) else Color.Gray,
                             fontSize = 16.sp
@@ -1406,7 +1345,7 @@ class MainActivity : ComponentActivity() {
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 Text(
-                    text = "${managementSelectedGrade.value}-${managementSelectedClass.value}반  총 ${filteredStudents.size}명",
+                    text = "1-${managementSelectedClass.value}반  총 ${filteredStudents.size}명",
                     fontSize = 13.sp, fontWeight = FontWeight.Bold, color = Color.Gray
                 )
                 Button(

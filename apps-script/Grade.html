@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html>
+<head>
+<base target="_top">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>학년부장 출결 현황</title>
+<style>
+body { font-family:'Malgun Gothic','Apple SD Gothic Neo',sans-serif; background:#f8f9fa; margin:0; padding:16px; color:#202124; }
+.container { max-width:960px; margin:0 auto; }
+.header { text-align:center; margin-bottom:16px; }
+.header h1 { margin:0; font-size:23px; color:#1a73e8; }
+.filter-card, .card { background:#fff; border:1px solid #dadce0; border-radius:14px; padding:16px; margin-bottom:16px; box-shadow:0 1px 3px rgba(0,0,0,.05); }
+input, button { width:100%; box-sizing:border-box; padding:12px; font-size:16px; border-radius:10px; border:1px solid #dadce0; }
+button { margin-top:8px; border:0; background:#1a73e8; color:white; font-weight:bold; }
+button:disabled { background:#9fc1f5; }
+.top-stats { display:grid; grid-template-columns:repeat(4, 1fr); gap:10px; }
+.stat { background:#f1f3f4; border-radius:12px; padding:14px; text-align:center; }
+.stat .num { font-size:24px; font-weight:bold; margin-bottom:4px; }
+.stat .label { color:#5f6368; font-size:13px; }
+.class-card { background:#fff; border:1px solid #dadce0; border-radius:14px; margin-bottom:12px; overflow:hidden; }
+.class-header { background:#f1f3f4; padding:12px 14px; display:flex; justify-content:space-between; align-items:center; font-weight:bold; }
+.class-body { padding:10px 14px; }
+.student { padding:9px 0; border-bottom:1px solid #f1f3f4; display:flex; justify-content:space-between; align-items:center; gap:10px; }
+.student:last-child { border-bottom:0; }
+.student-main { font-weight:bold; }
+.badges { display:flex; gap:6px; }
+.badge { font-size:11px; padding:4px 8px; border-radius:999px; font-weight:bold; white-space:nowrap; }
+.b-출석 { background:#e6f4ea; color:#137333; }
+.b-지각 { background:#fef7e0; color:#b06000; }
+.b-결석 { background:#fce8e6; color:#c5221f; }
+.b-학사 { background:#e8f0fe; color:#1a73e8; }
+.b-미기록 { background:#f1f3f4; color:#9aa0a6; }
+.empty { color:#5f6368; padding:12px 0; text-align:center; }
+.loading, .errorBox { text-align:center; padding:40px; color:#5f6368; }
+.errorBox { color:#c5221f; }
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="header">
+    <h1>학년부장 야자 출결 현황</h1>
+    <p>전체 반의 타임별 출결 현황을 조회합니다. (자동 결석 판정 없음 — 담임이 직접 처리한 기록만 반영됩니다)</p>
+  </div>
+
+  <div class="filter-card">
+    <input type="date" id="dateInput">
+    <button id="loadBtn" onclick="loadGrade()">조회</button>
+  </div>
+
+  <div id="content"></div>
+</div>
+
+<script>
+window.onload = function() {
+  const today = new Date();
+  const y = today.getFullYear();
+  const m = String(today.getMonth() + 1).padStart(2, '0');
+  const d = String(today.getDate()).padStart(2, '0');
+  document.getElementById('dateInput').value = `${y}-${m}-${d}`;
+  loadGrade();
+};
+
+function loadGrade() {
+  const date = document.getElementById('dateInput').value;
+  if (!date) return;
+
+  const loadBtn = document.getElementById('loadBtn');
+  loadBtn.disabled = true;
+  document.getElementById('content').innerHTML =
+    '<div class="loading">학년 전체 출결 현황을 불러오는 중입니다...</div>';
+
+  google.script.run
+    .withSuccessHandler(function(data) {
+      loadBtn.disabled = false;
+      if (data && data.error) {
+        document.getElementById('content').innerHTML =
+          '<div class="errorBox">조회 중 오류: ' + data.error + '</div>';
+        return;
+      }
+      renderGrade(data);
+    })
+    .withFailureHandler(function(error) {
+      loadBtn.disabled = false;
+      document.getElementById('content').innerHTML =
+        '<div class="errorBox">서버 통신 오류: ' + error.message + '<br>다시 시도해주세요.</div>';
+    })
+    .getGradeDailySummary(date);
+}
+
+function badge(status) {
+  return `<span class="badge b-${status}">${status}</span>`;
+}
+
+function renderGrade(data) {
+  const area = document.getElementById('content');
+
+  let totalPresent = 0, totalLate = 0, totalAbsent = 0;
+  data.classNames.forEach(cls => {
+    data.classes[cls].forEach(s => {
+      [s.period1, s.period2, s.period3].forEach(st => {
+        if (st === '출석' || st === '학사') totalPresent++;
+        else if (st === '지각') totalLate++;
+        else if (st === '결석') totalAbsent++;
+      });
+    });
+  });
+
+  const classHtml = data.classNames.map(cls => {
+    const students = data.classes[cls];
+    const studentHtml = students.length === 0
+      ? '<div class="empty">학생 없음</div>'
+      : students.map(s => `
+          <div class="student">
+            <div class="student-main">${s.studentId} ${s.name}</div>
+            <div class="badges">${badge(s.period1)}${badge(s.period2)}${badge(s.period3)}</div>
+          </div>
+        `).join('');
+
+    return `
+      <div class="class-card">
+        <div class="class-header">
+          <span>${cls}</span>
+          <span style="font-weight:normal; font-size:13px; color:#5f6368;">총 ${students.length}명</span>
+        </div>
+        <div class="class-body">${studentHtml}</div>
+      </div>
+    `;
+  }).join('');
+
+  area.innerHTML = `
+    <div class="card">
+      <div class="top-stats">
+        <div class="stat"><div class="num">${totalPresent}</div><div class="label">출석/학사</div></div>
+        <div class="stat"><div class="num">${totalLate}</div><div class="label">지각</div></div>
+        <div class="stat"><div class="num">${totalAbsent}</div><div class="label">결석</div></div>
+        <div class="stat"><div class="num">${data.classNames.length}</div><div class="label">반 수</div></div>
+      </div>
+    </div>
+    <div class="card">
+      <h3 style="margin-top:0;">반별 현황 (1타임 / 2타임 / 3타임)</h3>
+      ${classHtml}
+    </div>
+  `;
+}
+</script>
+</body>
+</html>
