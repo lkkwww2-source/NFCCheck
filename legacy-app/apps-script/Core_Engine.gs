@@ -194,17 +194,86 @@ function syncAttendance() {
   updateTeacherApprovalCheck();
 }
 
-// syncAttendance()는 이제 명단 매칭 없이 웹앱응답/폼응답을 그대로 옮기는 가벼운 변환이라 매번
-// 동기 호출해도 무겁지 않지만, 혹시 실패하더라도 "출결 기록 자체는 이미 저장됐다"는 사실과
-// "집계 갱신에 실패했다"는 사실을 분리해서 알 수 있도록 감싼다. (과거 버그: 저장은 이미 끝났는데
-// syncAttendance() 내부에서 예외가 나면 저장 자체가 실패한 것처럼 보이던 문제를 고친다.)
-function syncAttendanceSafely_() {
-  try {
-    syncAttendance();
-    return { success: true };
-  } catch (error) {
-    return { success: false, message: error.toString() };
+// ─────────────────────────────────────────────
+// 기록 한 건을 저장할 때마다 출결결과/담임허락체크 "시트 전체"를 지우고 다시 쓰면(옛 syncAttendance
+// 방식), 학기가 지나 기록이 쌓일수록 그 한 번의 저장이 점점 느려져서 휴대폰에서 타임아웃이
+// 자주 뜨게 된다. 그래서 실제 저장 경로(submitWebAttendance, saveAndroidAttendance,
+// markAbsentByTeacher)는 이제 이 upsert 함수들로 "그 학생의 그 줄 하나"만 찾아 고치거나 한 줄만
+// 추가한다. 전체 재계산·정렬·레거시 폼응답 반영은 5분 트리거(runScheduledAttendance)와
+// QR 메뉴의 수동 갱신에서만 돈다 - 둘 다 사용자가 응답을 기다리는 요청이 아니므로 느려도 된다.
+// ─────────────────────────────────────────────
+
+// 출결결과에 한 번에 여러 줄을 쓸 때(특히 안드로이드 "시트 전송" 일괄 전송) 매번 시트 전체를
+// 다시 읽지 않도록, 행 위치를 한 번만 인덱싱해서 이 호출 동안 재사용한다.
+function createResultUpserter_() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var resultSheet = ss.getSheetByName('출결결과');
+  if (!resultSheet) throw new Error('출결결과 시트 없음');
+
+  var resultHeader = ['실제날짜', '신청월', '요일', '타임', '학번', '이름', '반', '소속', '참여구분', '제출시간', '출결', '입실상태', '차이시간(분)', '비고'];
+  if (resultSheet.getLastRow() < 1) {
+    resultSheet.getRange(1, 1, 1, resultHeader.length).setValues([resultHeader]);
   }
+
+  var masterMap = buildStudentMasterMap_();
+  var timeMap = buildTimeMap_();
+  var rowIndex = {};
+  var lastRow = resultSheet.getLastRow();
+  if (lastRow >= 2) {
+    var data = resultSheet.getRange(2, 1, lastRow - 1, 5).getValues();
+    for (var i = 0; i < data.length; i++) {
+      var key = formatDateKey(data[i][0]) + '|' + String(data[i][3] || '').trim() + '|' + String(data[i][4] || '').trim();
+      rowIndex[key] = i + 2;
+    }
+  }
+  var nextFreeRow = lastRow + 1;
+
+  return {
+    // 한 학생의 한 (날짜,타임) 출결을 기록한다. 이미 그 줄이 있으면 덮어쓰고, 없으면 한 줄만 추가한다.
+    upsert: function (dateKey, period, studentId, status, note, timestamp) {
+      var master = masterMap[studentId] || {};
+      var month = dateKey.substring(0, 7);
+      var day = dayOfWeekKo_(parseDateKey(dateKey));
+      var qrLike = (status === '출석' || status === '지각') ? { timestamp: timestamp } : null;
+      var timingInfo = getTimingInfo(qrLike, day, period, timeMap);
+      var submitTimeText = timestamp ? formatDateTimeKo(timestamp) : '';
+      var row = [
+        parseDateKey(dateKey), month, day, period, studentId,
+        master.name || '', master.className || '', master.affiliation || '',
+        '자율학습', submitTimeText, status, timingInfo.status, timingInfo.minutes, note || ''
+      ];
+
+      var key = dateKey + '|' + period + '|' + studentId;
+      var targetRow = rowIndex[key];
+      if (!targetRow) {
+        targetRow = nextFreeRow;
+        rowIndex[key] = targetRow;
+        nextFreeRow++;
+      }
+      resultSheet.getRange(targetRow, 1, 1, row.length).setValues([row]);
+      resultSheet.getRange(targetRow, 1, 1, 1).setNumberFormat('yyyy. m. d');
+      resultSheet.getRange(targetRow, 2, 1, 1).setNumberFormat('@STRING@');
+      resultSheet.getRange(targetRow, 5, 1, 1).setNumberFormat('@STRING@');
+
+      // 결석이면, 담임이 아직 확인 전인 '미확인(N)' 행을 담임허락체크에 미리 만들어 둔다.
+      // 이미 승인/반려 기록이 있으면 손대지 않는다(markAbsentByTeacher가 직접 Y로 올리는 경우 제외).
+      if (status === '결석') {
+        ensurePendingApprovalRow_(dateKey, period, studentId, master.name || '', master.className || '', '자율학습');
+      }
+    },
+    // '리셋' 등으로 기록을 지울 때 쓴다.
+    remove: function (dateKey, period, studentId) {
+      var key = dateKey + '|' + period + '|' + studentId;
+      var targetRow = rowIndex[key];
+      if (!targetRow) return;
+      resultSheet.deleteRow(targetRow);
+      delete rowIndex[key];
+      Object.keys(rowIndex).forEach(function (k) {
+        if (rowIndex[k] > targetRow) rowIndex[k] -= 1;
+      });
+      nextFreeRow -= 1;
+    }
+  };
 }
 
 // 담임허락체크 시트를 출결결과의 '결석' 행에 맞춰 동기화한다. 기존에 저장된 담임허락(Y/N)과
@@ -307,32 +376,63 @@ function markAbsentByTeacher(dateText, period, className, studentId, reason) {
     var month = dateKey.substring(0, 7);
     var p = String(period || '').trim();
 
+    var now = new Date();
     deletePreexistingAttendanceRow_(sheet, dateKey, p, cleanId);
-    sheet.appendRow([new Date(), cleanId, month, day, p, dateKey, '교사결석', String(reason || '').trim()]);
+    sheet.appendRow([now, cleanId, month, day, p, dateKey, '교사결석', String(reason || '').trim()]);
 
-    var syncResult = syncAttendanceSafely_();
-    approveTeacherAbsence_(dateKey, p, cleanId, reason);
+    var writer = createResultUpserter_();
+    writer.upsert(dateKey, p, cleanId, '결석', String(reason || '').trim(), now);
+    upsertApprovalRowApproved_(dateKey, p, cleanId, info.name, info.className, '자율학습', reason);
 
-    if (!syncResult.success) {
-      return { result: 'success', message: info.name + ' 학생을 결석 처리했지만 집계 갱신 중 오류가 있었습니다: ' + syncResult.message };
-    }
     return { result: 'success', message: info.name + ' 학생을 결석 처리했습니다.' };
   } catch (error) {
     return { result: 'fail', message: error.toString() };
   }
 }
 
-function approveTeacherAbsence_(dateKey, period, studentId, reason) {
+// 결석 행이 담임허락체크에 아직 없을 때만 '미확인(N)' 상태로 한 줄 추가한다. 이미 있으면
+// (교사가 이미 처리했든, 담임이 승인/반려했든) 기존 상태를 건드리지 않는다.
+function ensurePendingApprovalRow_(dateKey, period, studentId, name, className, type) {
   var checkSheet = getApprovalSheet();
-  var data = checkSheet.getDataRange().getValues();
-  for (var i = 1; i < data.length; i++) {
-    if (formatDateKey(data[i][0]) === dateKey && String(data[i][4]).trim() === period && cleanStudentId(data[i][5]) === studentId) {
-      checkSheet.getRange(i + 1, 9).setValue('Y');
-      checkSheet.getRange(i + 1, 10).setValue(String(reason || '').trim());
-      checkSheet.getRange(i + 1, 11).setValue(new Date());
-      return;
+  var lastRow = checkSheet.getLastRow();
+  if (lastRow >= 2) {
+    var data = checkSheet.getRange(2, 1, lastRow - 1, 6).getValues();
+    for (var i = 0; i < data.length; i++) {
+      if (formatDateKey(data[i][0]) === dateKey && String(data[i][4]).trim() === period && cleanStudentId(data[i][5]) === studentId) {
+        return;
+      }
     }
   }
+  appendApprovalRow_(checkSheet, dateKey, period, studentId, name, className, type, 'N', '', '');
+}
+
+// 담임이 직접 결석 처리를 한 경우: 이미 있는 행이면 바로 Y로 승인, 없으면 Y로 승인된 채로 새로 만든다.
+function upsertApprovalRowApproved_(dateKey, period, studentId, name, className, type, reason) {
+  var checkSheet = getApprovalSheet();
+  var lastRow = checkSheet.getLastRow();
+  if (lastRow >= 2) {
+    var data = checkSheet.getRange(2, 1, lastRow - 1, 6).getValues();
+    for (var i = 0; i < data.length; i++) {
+      if (formatDateKey(data[i][0]) === dateKey && String(data[i][4]).trim() === period && cleanStudentId(data[i][5]) === studentId) {
+        var r = i + 2;
+        checkSheet.getRange(r, 9).setValue('Y');
+        checkSheet.getRange(r, 10).setValue(String(reason || '').trim());
+        checkSheet.getRange(r, 11).setValue(new Date());
+        return;
+      }
+    }
+  }
+  appendApprovalRow_(checkSheet, dateKey, period, studentId, name, className, type, 'Y', reason, new Date());
+}
+
+function appendApprovalRow_(checkSheet, dateKey, period, studentId, name, className, type, approval, reason, checkedAt) {
+  var day = dayOfWeekKo_(parseDateKey(dateKey));
+  var month = dateKey.substring(0, 7);
+  var row = [parseDateKey(dateKey), month, className, day, period, studentId, name, type, approval, String(reason || '').trim(), checkedAt || ''];
+  var newRowIndex = checkSheet.getLastRow() < 1 ? 2 : checkSheet.getLastRow() + 1;
+  checkSheet.getRange(newRowIndex, 1, 1, row.length).setValues([row]);
+  checkSheet.getRange(newRowIndex, 1, 1, 1).setNumberFormat('yyyy. m. d');
+  checkSheet.getRange(newRowIndex, 2, 1, 1).setNumberFormat('@STRING@');
 }
 
 function deletePreexistingAttendanceRow_(sheet, dateText, period, studentId) {

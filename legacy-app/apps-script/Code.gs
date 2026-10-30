@@ -114,7 +114,7 @@ function submitWebAttendance(studentId) {
   var cleanId = cleanStudentId(studentId);
   deletePreexistingRow(sheet, info.dateText, info.period, cleanId);
   sheet.appendRow([now, cleanId, info.month, info.day, info.period, info.dateText, '웹앱출석', '']);
-  syncAttendanceSafely_();
+  createResultUpserter_().upsert(info.dateText, info.period, cleanId, '출석', '', now);
   return {
     success: true, message: '출석 완료', studentId: cleanId,
     time: Utilities.formatDate(now, Session.getScriptTimeZone(), 'yyyy. M. d HH:mm:ss'),
@@ -134,12 +134,14 @@ function submitWebReason(studentId, reasonDate, reasonPeriods, reasonText) {
   var day = dayOfWeekKo_(d);
   var periods = Array.isArray(reasonPeriods) ? reasonPeriods : String(reasonPeriods).split(',');
   var now = new Date();
+  var writer = createResultUpserter_();
+  var trimmedReason = String(reasonText || '').trim();
   periods.forEach(function (period) {
     var p = String(period).trim();
     deletePreexistingRow(sheet, dateText, p, cleanId);
-    sheet.appendRow([now, cleanId, month, day, p, dateText, '웹앱사유', String(reasonText || '').trim()]);
+    sheet.appendRow([now, cleanId, month, day, p, dateText, '웹앱사유', trimmedReason]);
+    writer.upsert(dateText, p, cleanId, '결석', trimmedReason, now);
   });
-  syncAttendanceSafely_();
   return { success: true, message: '사유 제출 완료', period: month + ' ' + day + ' ' + periods.join(',') };
 }
 

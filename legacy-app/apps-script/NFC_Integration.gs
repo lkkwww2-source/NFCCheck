@@ -157,6 +157,11 @@ function getAttendanceStatusByDate(dateText) {
 function saveAndroidAttendance(records) {
   try {
     var sheet = getAttendanceSheet_();
+    // 여러 건(특히 "시트 전송" 일괄 전송)을 한 번에 받아도, 출결결과는 건마다 전체를 다시
+    // 읽지 않고 이 writer 하나로 그 줄들만 고쳐 쓴다 - 그래야 기록이 쌓여도 응답이 느려지지
+    // 않아서 휴대폰에서 타임아웃이 나지 않는다.
+    var writer = createResultUpserter_();
+
     for (var i = 0; i < records.length; i++) {
       var rec = records[i];
       var studentId = cleanStudentId(rec.studentNum);
@@ -168,22 +173,22 @@ function saveAndroidAttendance(records) {
       if (!studentId || !dateText || !status) continue;
 
       deletePreexistingAttendanceRow_(sheet, dateText, period, studentId);
-      if (status === '리셋') continue; // 리셋은 기존 행만 지우고 새로 쓰지 않음
+
+      if (status === '리셋') {
+        writer.remove(dateText, period, studentId); // 리셋은 기존 행만 지우고 새로 쓰지 않음
+        continue;
+      }
 
       var month = dateText.substring(0, 7);
       var day = dayOfWeekKo_(parseDateKey(dateText));
       var timestamp = new Date(dateText + 'T' + recordTime);
       var inputMethod = encodeAttendanceMethod_(rec.inputType, status);
       sheet.appendRow([timestamp, studentId, month, day, period, dateText, inputMethod, '']);
+      writer.upsert(dateText, period, studentId, status, '', timestamp);
     }
   } catch (error) {
     return { result: 'fail', message: error.toString() };
   }
 
-  // 원본 기록은 이미 저장됐으므로, 집계(출결결과) 갱신이 실패해도 저장 자체를 실패로 보고하지 않는다.
-  var syncResult = syncAttendanceSafely_();
-  if (!syncResult.success) {
-    return { result: 'success', message: '기록은 저장되었지만 집계 갱신 중 오류가 있었습니다: ' + syncResult.message };
-  }
   return { result: 'success', message: '동기화 성공' };
 }
