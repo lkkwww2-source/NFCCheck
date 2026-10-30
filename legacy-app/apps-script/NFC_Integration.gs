@@ -156,36 +156,37 @@ function getAttendanceStatusByDate(dateText) {
 // 지난 날짜를 터치로 정정 입력해도 항상 "오늘·지금"으로 기록되어 통계에서 빠지던 문제를 고친다.)
 function saveAndroidAttendance(records) {
   try {
-    var sheet = getAttendanceSheet_();
-    // 여러 건(특히 "시트 전송" 일괄 전송)을 한 번에 받아도, 출결결과는 건마다 전체를 다시
-    // 읽지 않고 이 writer 하나로 그 줄들만 고쳐 쓴다 - 그래야 기록이 쌓여도 응답이 느려지지
-    // 않아서 휴대폰에서 타임아웃이 나지 않는다.
-    var writer = createResultUpserter_();
+    // 거의 동시에 들어온 다른 저장 요청과 겹쳐서 같은 줄이 두 번 생기는 일이 없도록, 이 배치
+    // 전체를 하나의 잠금으로 묶는다. (여러 건이 와도 안에서는 writer 하나를 계속 재사용한다.)
+    withAttendanceLock_(function () {
+      var sheet = getAttendanceSheet_();
+      var writer = createResultUpserter_();
 
-    for (var i = 0; i < records.length; i++) {
-      var rec = records[i];
-      var studentId = cleanStudentId(rec.studentNum);
-      var dateText = normalizeDateText(rec.date);
-      var slotName = String(rec.slotName || '').trim();
-      var period = slotName === '방과후' ? '1타임' : (slotName === '야간1' ? '2타임' : '3타임');
-      var status = String(rec.status || '').trim();
-      var recordTime = String(rec.recordTime || '00:00:00').trim();
-      if (!studentId || !dateText || !status) continue;
+      for (var i = 0; i < records.length; i++) {
+        var rec = records[i];
+        var studentId = cleanStudentId(rec.studentNum);
+        var dateText = normalizeDateText(rec.date);
+        var slotName = String(rec.slotName || '').trim();
+        var period = slotName === '방과후' ? '1타임' : (slotName === '야간1' ? '2타임' : '3타임');
+        var status = String(rec.status || '').trim();
+        var recordTime = String(rec.recordTime || '00:00:00').trim();
+        if (!studentId || !dateText || !status) continue;
 
-      deletePreexistingAttendanceRow_(sheet, dateText, period, studentId);
+        deletePreexistingAttendanceRow_(sheet, dateText, period, studentId);
 
-      if (status === '리셋') {
-        writer.remove(dateText, period, studentId); // 리셋은 기존 행만 지우고 새로 쓰지 않음
-        continue;
+        if (status === '리셋') {
+          writer.remove(dateText, period, studentId); // 리셋은 기존 행만 지우고 새로 쓰지 않음
+          continue;
+        }
+
+        var month = dateText.substring(0, 7);
+        var day = dayOfWeekKo_(parseDateKey(dateText));
+        var timestamp = new Date(dateText + 'T' + recordTime);
+        var inputMethod = encodeAttendanceMethod_(rec.inputType, status);
+        sheet.appendRow([timestamp, studentId, month, day, period, dateText, inputMethod, '']);
+        writer.upsert(dateText, period, studentId, status, '', timestamp);
       }
-
-      var month = dateText.substring(0, 7);
-      var day = dayOfWeekKo_(parseDateKey(dateText));
-      var timestamp = new Date(dateText + 'T' + recordTime);
-      var inputMethod = encodeAttendanceMethod_(rec.inputType, status);
-      sheet.appendRow([timestamp, studentId, month, day, period, dateText, inputMethod, '']);
-      writer.upsert(dateText, period, studentId, status, '', timestamp);
-    }
+    });
   } catch (error) {
     return { result: 'fail', message: error.toString() };
   }

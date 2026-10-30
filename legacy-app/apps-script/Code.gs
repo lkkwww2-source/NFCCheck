@@ -110,11 +110,13 @@ function submitWebAttendance(studentId) {
       period: info.month + ' ' + info.day + ' ' + info.period
     };
   }
-  var sheet = getAttendanceSheet_();
   var cleanId = cleanStudentId(studentId);
-  deletePreexistingRow(sheet, info.dateText, info.period, cleanId);
-  sheet.appendRow([now, cleanId, info.month, info.day, info.period, info.dateText, '웹앱출석', '']);
-  createResultUpserter_().upsert(info.dateText, info.period, cleanId, '출석', '', now);
+  withAttendanceLock_(function () {
+    var sheet = getAttendanceSheet_();
+    deletePreexistingRow(sheet, info.dateText, info.period, cleanId);
+    sheet.appendRow([now, cleanId, info.month, info.day, info.period, info.dateText, '웹앱출석', '']);
+    createResultUpserter_().upsert(info.dateText, info.period, cleanId, '출석', '', now);
+  });
   return {
     success: true, message: '출석 완료', studentId: cleanId,
     time: Utilities.formatDate(now, Session.getScriptTimeZone(), 'yyyy. M. d HH:mm:ss'),
@@ -125,7 +127,6 @@ function submitWebAttendance(studentId) {
 // 학생이 스스로 불참 사유를 사전 제출한다. 참여명단 대비 판정이 사라졌으므로, 이 제출이
 // 바로 출결결과에 '결석'으로 기록되고 담임의 확인(사유 승인)을 기다리는 형태로 들어간다.
 function submitWebReason(studentId, reasonDate, reasonPeriods, reasonText) {
-  var sheet = getAttendanceSheet_();
   var cleanId = cleanStudentId(studentId);
   var d = new Date(reasonDate);
   var tz = Session.getScriptTimeZone();
@@ -134,14 +135,19 @@ function submitWebReason(studentId, reasonDate, reasonPeriods, reasonText) {
   var day = dayOfWeekKo_(d);
   var periods = Array.isArray(reasonPeriods) ? reasonPeriods : String(reasonPeriods).split(',');
   var now = new Date();
-  var writer = createResultUpserter_();
   var trimmedReason = String(reasonText || '').trim();
-  periods.forEach(function (period) {
-    var p = String(period).trim();
-    deletePreexistingRow(sheet, dateText, p, cleanId);
-    sheet.appendRow([now, cleanId, month, day, p, dateText, '웹앱사유', trimmedReason]);
-    writer.upsert(dateText, p, cleanId, '결석', trimmedReason, now);
+
+  withAttendanceLock_(function () {
+    var sheet = getAttendanceSheet_();
+    var writer = createResultUpserter_();
+    periods.forEach(function (period) {
+      var p = String(period).trim();
+      deletePreexistingRow(sheet, dateText, p, cleanId);
+      sheet.appendRow([now, cleanId, month, day, p, dateText, '웹앱사유', trimmedReason]);
+      writer.upsert(dateText, p, cleanId, '결석', trimmedReason, now);
+    });
   });
+
   return { success: true, message: '사유 제출 완료', period: month + ' ' + day + ' ' + periods.join(',') };
 }
 

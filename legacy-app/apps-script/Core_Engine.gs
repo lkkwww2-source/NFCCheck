@@ -17,6 +17,25 @@ function runScheduledAttendance() {
   syncAttendance();
 }
 
+// 거의 동시에 들어온 저장 요청 두 개가 "아직 이 줄이 없네" → 둘 다 새 줄을 만드는 식으로
+// 중복 기록을 만들지 못하도록, 출결을 저장하는 요청은 한 번에 하나씩만 실행되게 묶는다.
+// (createResultUpserter_가 행 위치를 한 번만 읽어서 재사용하는 방식이라, 저장 요청끼리 겹치면
+// 서로 다른 줄로 착각해 중복 행이 생길 수 있다. 저장 자체가 가벼워졌기 때문에 순서대로 처리해도
+// 눈에 띄게 느려지지 않는다.)
+function withAttendanceLock_(fn) {
+  var lock = LockService.getScriptLock();
+  try {
+    lock.waitLock(20000);
+  } catch (e) {
+    throw new Error('다른 출결 저장이 진행 중입니다. 잠시 후 다시 시도해 주세요.');
+  }
+  try {
+    return fn();
+  } finally {
+    lock.releaseLock();
+  }
+}
+
 // NFC학생현황 시트의 D열은 '반'이 아니라 '등록여부'라서(현재 쓰지 않음), 반은 학번 자릿수로
 // 계산한다: 4자리 학번은 2번째 자리, 5자리 이상은 2~3번째 자리가 반.
 function classNameFromStudentId_(studentId) {
@@ -221,12 +240,27 @@ function createResultUpserter_() {
   var lastRow = resultSheet.getLastRow();
   if (lastRow >= 2) {
     var data = resultSheet.getRange(2, 1, lastRow - 1, 5).getValues();
+    var duplicateRows = [];
     for (var i = 0; i < data.length; i++) {
       var key = formatDateKey(data[i][0]) + '|' + String(data[i][3] || '').trim() + '|' + String(data[i][4] || '').trim();
-      rowIndex[key] = i + 2;
+      var rowNum = i + 2;
+      if (rowIndex[key] !== undefined) {
+        // 같은 (날짜,타임,학번) 줄이 이미 있다 - 동시 저장 등으로 생긴 중복이다.
+        // 더 아래(나중에 쓰인) 줄을 최신으로 보고, 위에 있던 줄은 지운다.
+        duplicateRows.push(rowIndex[key]);
+      }
+      rowIndex[key] = rowNum;
     }
+    // 중복 줄은 뒤(행 번호가 큰 것)부터 지워야 앞 줄 번호가 안 꼬인다.
+    duplicateRows.sort(function (a, b) { return b - a; });
+    duplicateRows.forEach(function (rowNum) {
+      resultSheet.deleteRow(rowNum);
+      Object.keys(rowIndex).forEach(function (k) {
+        if (rowIndex[k] > rowNum) rowIndex[k] -= 1;
+      });
+    });
   }
-  var nextFreeRow = lastRow + 1;
+  var nextFreeRow = resultSheet.getLastRow() + 1;
 
   return {
     // 한 학생의 한 (날짜,타임) 출결을 기록한다. 이미 그 줄이 있으면 덮어쓰고, 없으면 한 줄만 추가한다.
@@ -365,26 +399,28 @@ function checkWebAttendanceAllowed(studentId) {
 // 담임이 직접 처리한 결석은 생성 즉시 담임허락을 'Y'로 승인 처리한다.
 function markAbsentByTeacher(dateText, period, className, studentId, reason) {
   try {
-    var masterMap = buildStudentMasterMap_();
-    var cleanId = cleanStudentId(studentId);
-    var info = masterMap[cleanId];
-    if (!info) return { result: 'fail', message: '등록되지 않은 학번입니다: ' + studentId };
+    return withAttendanceLock_(function () {
+      var masterMap = buildStudentMasterMap_();
+      var cleanId = cleanStudentId(studentId);
+      var info = masterMap[cleanId];
+      if (!info) return { result: 'fail', message: '등록되지 않은 학번입니다: ' + studentId };
 
-    var sheet = getAttendanceSheet_();
-    var dateKey = normalizeDateText(dateText);
-    var day = dayOfWeekKo_(parseDateKey(dateKey));
-    var month = dateKey.substring(0, 7);
-    var p = String(period || '').trim();
+      var sheet = getAttendanceSheet_();
+      var dateKey = normalizeDateText(dateText);
+      var day = dayOfWeekKo_(parseDateKey(dateKey));
+      var month = dateKey.substring(0, 7);
+      var p = String(period || '').trim();
 
-    var now = new Date();
-    deletePreexistingAttendanceRow_(sheet, dateKey, p, cleanId);
-    sheet.appendRow([now, cleanId, month, day, p, dateKey, '교사결석', String(reason || '').trim()]);
+      var now = new Date();
+      deletePreexistingAttendanceRow_(sheet, dateKey, p, cleanId);
+      sheet.appendRow([now, cleanId, month, day, p, dateKey, '교사결석', String(reason || '').trim()]);
 
-    var writer = createResultUpserter_();
-    writer.upsert(dateKey, p, cleanId, '결석', String(reason || '').trim(), now);
-    upsertApprovalRowApproved_(dateKey, p, cleanId, info.name, info.className, '자율학습', reason);
+      var writer = createResultUpserter_();
+      writer.upsert(dateKey, p, cleanId, '결석', String(reason || '').trim(), now);
+      upsertApprovalRowApproved_(dateKey, p, cleanId, info.name, info.className, '자율학습', reason);
 
-    return { result: 'success', message: info.name + ' 학생을 결석 처리했습니다.' };
+      return { result: 'success', message: info.name + ' 학생을 결석 처리했습니다.' };
+    });
   } catch (error) {
     return { result: 'fail', message: error.toString() };
   }
@@ -392,35 +428,43 @@ function markAbsentByTeacher(dateText, period, className, studentId, reason) {
 
 // 결석 행이 담임허락체크에 아직 없을 때만 '미확인(N)' 상태로 한 줄 추가한다. 이미 있으면
 // (교사가 이미 처리했든, 담임이 승인/반려했든) 기존 상태를 건드리지 않는다.
-function ensurePendingApprovalRow_(dateKey, period, studentId, name, className, type) {
-  var checkSheet = getApprovalSheet();
+// 같은 (날짜,타임,학번)에 해당하는 줄을 찾는다. 혹시 중복으로 여러 줄이 있으면(동시 저장 등)
+// 가장 나중 줄만 남기고 앞의 것들은 지운 뒤, 남은 줄의 행 번호를 돌려준다. 없으면 null.
+function findApprovalRowKeepingLatest_(checkSheet, dateKey, period, studentId) {
   var lastRow = checkSheet.getLastRow();
-  if (lastRow >= 2) {
-    var data = checkSheet.getRange(2, 1, lastRow - 1, 6).getValues();
-    for (var i = 0; i < data.length; i++) {
-      if (formatDateKey(data[i][0]) === dateKey && String(data[i][4]).trim() === period && cleanStudentId(data[i][5]) === studentId) {
-        return;
-      }
+  if (lastRow < 2) return null;
+  var data = checkSheet.getRange(2, 1, lastRow - 1, 6).getValues();
+  var matches = [];
+  for (var i = 0; i < data.length; i++) {
+    if (formatDateKey(data[i][0]) === dateKey && String(data[i][4]).trim() === period && cleanStudentId(data[i][5]) === studentId) {
+      matches.push(i + 2);
     }
   }
+  if (matches.length === 0) return null;
+  var keepRow = matches.pop();
+  matches.sort(function (a, b) { return b - a; }); // 뒤에서부터 지워야 행 번호가 안 꼬인다
+  matches.forEach(function (rowNum) {
+    checkSheet.deleteRow(rowNum);
+    if (rowNum < keepRow) keepRow -= 1;
+  });
+  return keepRow;
+}
+
+function ensurePendingApprovalRow_(dateKey, period, studentId, name, className, type) {
+  var checkSheet = getApprovalSheet();
+  if (findApprovalRowKeepingLatest_(checkSheet, dateKey, period, studentId) !== null) return;
   appendApprovalRow_(checkSheet, dateKey, period, studentId, name, className, type, 'N', '', '');
 }
 
 // 담임이 직접 결석 처리를 한 경우: 이미 있는 행이면 바로 Y로 승인, 없으면 Y로 승인된 채로 새로 만든다.
 function upsertApprovalRowApproved_(dateKey, period, studentId, name, className, type, reason) {
   var checkSheet = getApprovalSheet();
-  var lastRow = checkSheet.getLastRow();
-  if (lastRow >= 2) {
-    var data = checkSheet.getRange(2, 1, lastRow - 1, 6).getValues();
-    for (var i = 0; i < data.length; i++) {
-      if (formatDateKey(data[i][0]) === dateKey && String(data[i][4]).trim() === period && cleanStudentId(data[i][5]) === studentId) {
-        var r = i + 2;
-        checkSheet.getRange(r, 9).setValue('Y');
-        checkSheet.getRange(r, 10).setValue(String(reason || '').trim());
-        checkSheet.getRange(r, 11).setValue(new Date());
-        return;
-      }
-    }
+  var keepRow = findApprovalRowKeepingLatest_(checkSheet, dateKey, period, studentId);
+  if (keepRow !== null) {
+    checkSheet.getRange(keepRow, 9).setValue('Y');
+    checkSheet.getRange(keepRow, 10).setValue(String(reason || '').trim());
+    checkSheet.getRange(keepRow, 11).setValue(new Date());
+    return;
   }
   appendApprovalRow_(checkSheet, dateKey, period, studentId, name, className, type, 'Y', reason, new Date());
 }
