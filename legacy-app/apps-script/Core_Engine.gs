@@ -74,6 +74,50 @@ function getAttendanceSheet_() {
   return sheet;
 }
 
+// 웹앱응답 시트에서 같은 (실제날짜,타임,학번) 기록이 여러 줄 있으면, 타임스탬프가 가장 늦은
+// 것만 남기고 나머지는 지운다. 동시 저장 등으로 과거에 생겼을 수 있는 중복을 스프레드시트에서
+// 직접(메뉴 버튼으로) 정리할 때 쓴다.
+function dedupeWebAppResponseSheet_() {
+  var sheet = getAttendanceSheet_();
+  if (sheet.getLastRow() < 2) return { removed: 0 };
+
+  var data = sheet.getDataRange().getValues();
+  var bestRowByKey = {}; // key -> { dataIndex, ts }
+  for (var i = 1; i < data.length; i++) {
+    var row = data[i];
+    var studentId = cleanStudentId(row[1]);
+    var period = String(row[4] || '').trim();
+    var dateText = normalizeDateText(row[5]);
+    if (!studentId || !period || !dateText) continue; // 형식이 이상한 행은 건드리지 않는다
+
+    var key = dateText + '|' + period + '|' + studentId;
+    var ts = row[0] ? new Date(row[0]).getTime() : 0;
+    var prev = bestRowByKey[key];
+    if (!prev || ts >= prev.ts) {
+      bestRowByKey[key] = { dataIndex: i, ts: ts };
+    }
+  }
+
+  var rowsToDelete = [];
+  for (var i = 1; i < data.length; i++) {
+    var row = data[i];
+    var studentId = cleanStudentId(row[1]);
+    var period = String(row[4] || '').trim();
+    var dateText = normalizeDateText(row[5]);
+    if (!studentId || !period || !dateText) continue;
+
+    var key = dateText + '|' + period + '|' + studentId;
+    if (bestRowByKey[key].dataIndex !== i) {
+      rowsToDelete.push(i + 1); // data[i]는 시트의 (i+1)번째 행(헤더가 1행)
+    }
+  }
+
+  rowsToDelete.sort(function (a, b) { return b - a; }); // 뒤에서부터 지워야 행 번호가 안 꼬인다
+  rowsToDelete.forEach(function (rowNum) { sheet.deleteRow(rowNum); });
+
+  return { removed: rowsToDelete.length };
+}
+
 function buildTimeMap_() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var timeSheet = ss.getSheetByName('QR기준시간');

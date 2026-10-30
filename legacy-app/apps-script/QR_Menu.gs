@@ -10,6 +10,7 @@ function onOpen() {
     .addItem('2. 출결결과 갱신', 'menuSyncAttendance')
     .addItem('3. 담임허락체크 갱신', 'menuUpdateTeacherApprovalCheck')
     .addItem('4. 야자참여분석 갱신', 'menuRefreshYajaParticipationAnalysis')
+    .addItem('5. 웹앱응답 중복 정리', 'menuDedupeWebAppResponse')
     .addSeparator()
     .addSubMenu(
       SpreadsheetApp.getUi()
@@ -77,6 +78,17 @@ function menuRefreshYajaParticipationAnalysis() {
     refreshYajaParticipationAnalysis();
     return '야자참여분석을 갱신했습니다.';
   });
+}
+
+function menuDedupeWebAppResponse() {
+  return qrMenuRun_('웹앱응답 중복 정리', function () {
+    var result = dedupeWebAppResponseSheet_();
+    syncAttendance(); // 정리한 로그를 바로 출결결과/담임허락체크에도 반영
+    if (result.removed === 0) {
+      return '웹앱응답에 중복 기록이 없었습니다.';
+    }
+    return '웹앱응답에서 중복 기록 ' + result.removed + '건을 삭제했습니다. 출결결과/담임허락체크도 함께 갱신했습니다.';
+  }, true);
 }
 
 function menuCheckNfcRoster() {
