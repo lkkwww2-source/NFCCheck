@@ -285,12 +285,19 @@ function createResultUpserter_() {
   var timeMap = buildTimeMap_();
   var rowIndex = {};
   var lastRow = resultSheet.getLastRow();
+  // 학기가 지날수록 출결결과가 몇만 줄까지 쌓일 수 있는데, 매 요청마다 그 전체를 읽으면
+  // 시트가 커질수록 이 함수 자체가 점점 느려져서 결국 다시 타임아웃/잠금 대기로 이어진다.
+  // 실제 정정은 거의 항상 최근 날짜에 몰리므로, 최근 N줄만 인덱싱해 비용을 일정하게 묶어둔다.
+  // 이보다 오래된 날짜를 고치는 드문 경우엔 새 줄이 하나 더 생길 수 있지만, 5분마다 도는
+  // syncAttendance() 전체 재계산이 웹앱응답 원본을 기준으로 항상 중복 없이 다시 정리해 준다.
+  var RECENT_WINDOW_ROWS = 3000;
+  var startRow = Math.max(2, lastRow - RECENT_WINDOW_ROWS + 1);
   if (lastRow >= 2) {
-    var data = resultSheet.getRange(2, 1, lastRow - 1, 5).getValues();
+    var data = resultSheet.getRange(startRow, 1, lastRow - startRow + 1, 5).getValues();
     var duplicateRows = [];
     for (var i = 0; i < data.length; i++) {
       var key = formatDateKey(data[i][0]) + '|' + String(data[i][3] || '').trim() + '|' + String(data[i][4] || '').trim();
-      var rowNum = i + 2;
+      var rowNum = startRow + i;
       if (rowIndex[key] !== undefined) {
         // 같은 (날짜,타임,학번) 줄이 이미 있다 - 동시 저장 등으로 생긴 중복이다.
         // 더 아래(나중에 쓰인) 줄을 최신으로 보고, 위에 있던 줄은 지운다.

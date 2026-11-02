@@ -2017,73 +2017,87 @@ class MainActivity : ComponentActivity() {
     // 두 번 전송 요청하게 될 수 있어서, 이미 전송 중이면 새 요청을 걸지 않는다.
     @Volatile private var isFlushingPendingSends = false
 
+    // 타이머/🔄/onPause가 겹쳐 불러도 한 번에 하나의 전송 사이클만 돈다. 실패하면 짧게(10~30초)
+    // 한 번 더 시도하고, 그래도 안 되면 포기하고 다음 5분 주기를 기다린다 - 그 사이에 이 함수가
+    // 다시 불려도(가드가 계속 걸려 있으므로) 새 요청을 또 띄우지 않는다.
     private fun flushPendingSends() {
         if (pendingSends.isEmpty()) return
         if (isFlushingPendingSends) return
         isFlushingPendingSends = true
-        val records = pendingSends.toList()
-
-        val jsonRecords = JSONArray()
-        records.forEach { r ->
-            jsonRecords.put(JSONObject().apply {
-                put("studentNum", r.studentNum)
-                put("slotName", r.slotName)
-                put("status", r.status)
-                put("date", r.dateKey)
-                put("recordTime", r.recordTime)
-                put("inputType", r.inputType)
-            })
-        }
-        val body = JSONObject().apply {
-            put("mode", "SAVE_ATTENDANCE")
-            put("records", jsonRecords)
-        }
-
-        statusMessage.value = "📤 기록 ${records.size}건 전송 중..."
 
         CoroutineScope(Dispatchers.IO).launch {
             var ok = false
             var message = ""
-            try {
-                val conn = URL(googleSheetUrl).openConnection() as HttpURLConnection
-                conn.requestMethod = "POST"
-                conn.doOutput = true
-                conn.instanceFollowRedirects = true
-                conn.connectTimeout = 45000
-                conn.readTimeout = 45000
-                conn.setRequestProperty("Content-Type", "application/json; charset=UTF-8")
-                OutputStreamWriter(conn.outputStream, "UTF-8").use { it.write(body.toString()); it.flush() }
+            var attempt = 0
 
-                val responseText = if (conn.responseCode == HttpURLConnection.HTTP_OK) {
-                    BufferedReader(InputStreamReader(conn.inputStream, "UTF-8")).use { it.readText() }
-                } else "fail_${conn.responseCode}"
+            while (attempt < 2) {
+                attempt++
+                val records = pendingSends.toList()
+                if (records.isEmpty()) { ok = true; break }
 
-                val json = JSONObject(responseText)
-                ok = json.optString("result", "fail") == "success"
-                message = json.optString("message", responseText)
-            } catch (e: Exception) {
-                ok = false
-                message = e.message ?: "알 수 없는 오류"
+                val jsonRecords = JSONArray()
+                records.forEach { r ->
+                    jsonRecords.put(JSONObject().apply {
+                        put("studentNum", r.studentNum)
+                        put("slotName", r.slotName)
+                        put("status", r.status)
+                        put("date", r.dateKey)
+                        put("recordTime", r.recordTime)
+                        put("inputType", r.inputType)
+                    })
+                }
+                val body = JSONObject().apply {
+                    put("mode", "SAVE_ATTENDANCE")
+                    put("records", jsonRecords)
+                }
+
+                withContext(Dispatchers.Main) {
+                    statusMessage.value = if (attempt == 1) "📤 기록 ${records.size}건 전송 중..." else "📤 기록 ${records.size}건 재시도 중... (${attempt}차)"
+                }
+
+                try {
+                    val conn = URL(googleSheetUrl).openConnection() as HttpURLConnection
+                    conn.requestMethod = "POST"
+                    conn.doOutput = true
+                    conn.instanceFollowRedirects = true
+                    conn.connectTimeout = 45000
+                    conn.readTimeout = 45000
+                    conn.setRequestProperty("Content-Type", "application/json; charset=UTF-8")
+                    OutputStreamWriter(conn.outputStream, "UTF-8").use { it.write(body.toString()); it.flush() }
+
+                    val responseText = if (conn.responseCode == HttpURLConnection.HTTP_OK) {
+                        BufferedReader(InputStreamReader(conn.inputStream, "UTF-8")).use { it.readText() }
+                    } else "fail_${conn.responseCode}"
+
+                    val json = JSONObject(responseText)
+                    ok = json.optString("result", "fail") == "success"
+                    message = json.optString("message", responseText)
+                } catch (e: Exception) {
+                    ok = false
+                    message = e.message ?: "알 수 없는 오류"
+                }
+
+                if (ok) {
+                    withContext(Dispatchers.Main) {
+                        val ids = records.map { it.id }.toSet()
+                        pendingSends.removeAll { it.id in ids }
+                        savePendingSendsToPrefs()
+                        statusMessage.value = "✅ 기록 ${records.size}건 전송 완료"
+                    }
+                    break
+                } else if (attempt < 2) {
+                    // 실패해도 큐에 그대로 남아 있으므로(아직 지우지 않았다) 전송은 안전하다.
+                    // 다른 저장과 잠금이 겹쳐서 실패했을 가능성이 높으니, 짧게 쉬었다가 한 번만 더 시도한다.
+                    delay((10_000..30_000).random().toLong())
+                }
             }
 
             withContext(Dispatchers.Main) {
                 isFlushingPendingSends = false
-                if (ok) {
-                    val ids = records.map { it.id }.toSet()
-                    pendingSends.removeAll { it.id in ids }
-                    savePendingSendsToPrefs()
-                    statusMessage.value = "✅ 기록 ${records.size}건 전송 완료"
-                } else {
-                    // 실패해도 큐에 그대로 남아 있으므로(이미 추가했고 여기서 지우지 않는다) 전송은
-                    // 안전하다. 다만 다른 기기와 저장 잠금이 겹쳐서 실패했을 가능성이 높으므로,
-                    // 5분을 다 기다리지 않고 기기마다 다른 짧은 시간(10~30초) 뒤에 한 번 더
-                    // 시도한다 - 기기별로 재시도 시점이 흩어지게 해서 같은 충돌이 반복되는 걸 줄인다.
+                if (!ok) {
                     Log.e("NFC_SEND", "일괄 전송 실패: $message")
-                    statusMessage.value = "⚠️ 전송 실패(잠시 후 자동 재시도): $message"
+                    statusMessage.value = "⚠️ 전송 실패(다음 자동 전송 때 재시도): $message"
                     Toast.makeText(this@MainActivity, "전송 실패: $message", Toast.LENGTH_LONG).show()
-                    val retryDelayMs = (10_000..30_000).random().toLong()
-                    delay(retryDelayMs)
-                    flushPendingSends()
                 }
             }
         }
