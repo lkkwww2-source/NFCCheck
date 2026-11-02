@@ -25,7 +25,10 @@ function runScheduledAttendance() {
 function withAttendanceLock_(fn) {
   var lock = LockService.getScriptLock();
   try {
-    lock.waitLock(20000);
+    // 기기가 여러 대라 5분 전송 주기가 우연히 겹칠 수 있으므로, 20초보다 넉넉하게 기다린다.
+    // 저장 자체는 가벼워졌으니(요청당 한두 번의 시트 쓰기) 여러 기기가 줄 서도 보통 몇 초 안에
+    // 전부 끝난다 - 그래도 못 넘기면 그건 정말 뭔가 막혀 있는 것이다.
+    lock.waitLock(50000);
   } catch (e) {
     throw new Error('다른 출결 저장이 진행 중입니다. 잠시 후 다시 시도해 주세요.');
   }

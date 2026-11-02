@@ -253,7 +253,10 @@ class MainActivity : ComponentActivity() {
             // 5분에 한 번 정도만 요청이 가니, 저장 잠금 경합(그로 인한 타임아웃)이 크게 줄어든다.
             LaunchedEffect(Unit) {
                 while (true) {
-                    delay(5 * 60 * 1000L)
+                    // 기기마다 주기에 무작위 시간을 더해서, 여러 기기의 5분 타이머가 정확히
+                    // 맞물려 같은 순간에 전송을 몰아 보내는 일(그로 인한 저장 잠금 경합)을 줄인다.
+                    val jitterMs = (0..45_000).random().toLong()
+                    delay(5 * 60 * 1000L + jitterMs)
                     flushPendingSends()
                 }
             }
@@ -2010,8 +2013,14 @@ class MainActivity : ComponentActivity() {
     // 큐에 쌓인 기록을 전부 한 번의 요청으로 묶어 보낸다. 탭/터치마다 따로 보내지 않고 이렇게
     // 모아 보내면, 학생들이 몰리는 시간대에도 서버에는 드문드문 요청이 가므로 저장 잠금 경합
     // (그로 인한 타임아웃·"다른 출결 저장이 진행 중" 오류)이 크게 줄어든다.
+    // 5분 타이머, 🔄 버튼, onPause가 거의 동시에 겹치면(또는 여러 기기가 겹치면) 같은 기록을
+    // 두 번 전송 요청하게 될 수 있어서, 이미 전송 중이면 새 요청을 걸지 않는다.
+    @Volatile private var isFlushingPendingSends = false
+
     private fun flushPendingSends() {
         if (pendingSends.isEmpty()) return
+        if (isFlushingPendingSends) return
+        isFlushingPendingSends = true
         val records = pendingSends.toList()
 
         val jsonRecords = JSONArray()
@@ -2058,17 +2067,23 @@ class MainActivity : ComponentActivity() {
             }
 
             withContext(Dispatchers.Main) {
+                isFlushingPendingSends = false
                 if (ok) {
                     val ids = records.map { it.id }.toSet()
                     pendingSends.removeAll { it.id in ids }
                     savePendingSendsToPrefs()
                     statusMessage.value = "✅ 기록 ${records.size}건 전송 완료"
                 } else {
-                    // 실패해도 큐에 그대로 남아 있으므로(이미 추가했고 여기서 지우지 않는다) 다음
-                    // 5분 주기나 새로고침 때 다시 시도된다.
+                    // 실패해도 큐에 그대로 남아 있으므로(이미 추가했고 여기서 지우지 않는다) 전송은
+                    // 안전하다. 다만 다른 기기와 저장 잠금이 겹쳐서 실패했을 가능성이 높으므로,
+                    // 5분을 다 기다리지 않고 기기마다 다른 짧은 시간(10~30초) 뒤에 한 번 더
+                    // 시도한다 - 기기별로 재시도 시점이 흩어지게 해서 같은 충돌이 반복되는 걸 줄인다.
                     Log.e("NFC_SEND", "일괄 전송 실패: $message")
                     statusMessage.value = "⚠️ 전송 실패(잠시 후 자동 재시도): $message"
                     Toast.makeText(this@MainActivity, "전송 실패: $message", Toast.LENGTH_LONG).show()
+                    val retryDelayMs = (10_000..30_000).random().toLong()
+                    delay(retryDelayMs)
+                    flushPendingSends()
                 }
             }
         }
