@@ -348,6 +348,9 @@ function createResultUpserter_() {
 
   var masterMap = buildStudentMasterMap_();
   var timeMap = buildTimeMap_();
+  // 결석 기록이 여러 건 섞인 배치를 처리할 때, 결석 하나하나마다 담임허락체크 전체를 다시
+  // 훑지 않도록 이 요청 동안 하나만 만들어 재사용한다 (아래 upsert()/approveAbsence()에서 씀).
+  var approvalWriter = createApprovalWriter_();
   var rowIndex = {};
   var lastRow = resultSheet.getLastRow();
   // 학기가 지날수록 출결결과가 몇만 줄까지 쌓일 수 있는데, 매 요청마다 그 전체를 읽으면
@@ -418,8 +421,12 @@ function createResultUpserter_() {
       // 결석이면, 담임이 아직 확인 전인 '미확인(N)' 행을 담임허락체크에 미리 만들어 둔다.
       // 이미 승인/반려 기록이 있으면 손대지 않는다(markAbsentByTeacher가 직접 Y로 올리는 경우 제외).
       if (status === '결석') {
-        ensurePendingApprovalRow_(dateKey, period, studentId, master.name || '', master.className || '', '자율학습');
+        approvalWriter.ensurePending(dateKey, period, studentId, master.name || '', master.className || '', '자율학습');
       }
+    },
+    // 담임이 직접 결석 처리한 경우에 쓴다 (markAbsentByTeacher 전용) - 바로 승인(Y) 상태로 만든다.
+    approveAbsence: function (dateKey, period, studentId, name, className, type, reason) {
+      approvalWriter.approve(dateKey, period, studentId, name, className, type, reason);
     },
     // '리셋' 등으로 기록을 지울 때 쓴다.
     remove: function (dateKey, period, studentId) {
@@ -440,13 +447,86 @@ function createResultUpserter_() {
     // 이번 요청에서 새로 추가된 줄에 서식을 한 번에 입힌다. upsert/remove를 다 호출한 뒤 반드시
     // 한 번 불러야 한다 (잠금을 해제하기 전, 같은 요청 안에서).
     finalize: function () {
+      if (newRowNumbers.length > 0) {
+        var minRow = Math.min.apply(null, newRowNumbers);
+        var maxRow = Math.max.apply(null, newRowNumbers);
+        var span = maxRow - minRow + 1;
+        resultSheet.getRange(minRow, 1, span, 1).setNumberFormat('yyyy. m. d');
+        resultSheet.getRange(minRow, 2, span, 1).setNumberFormat('@STRING@');
+        resultSheet.getRange(minRow, 5, span, 1).setNumberFormat('@STRING@');
+      }
+      approvalWriter.finalize();
+    }
+  };
+}
+
+// 담임허락체크에 한 번에 여러 줄을 쓸 때(결석이 여러 건 섞인 배치, 또는 교사 직접 결석 처리)
+// 매번 시트 전체를 다시 읽지 않도록, 출결결과/웹앱응답과 같은 방식으로 최근 500줄만 인덱싱해
+// 이 호출 동안 재사용한다.
+function createApprovalWriter_() {
+  var checkSheet = getApprovalSheet();
+  var lastRow = checkSheet.getLastRow();
+  var RECENT_WINDOW_ROWS = 500;
+  var startRow = Math.max(2, lastRow - RECENT_WINDOW_ROWS + 1);
+
+  var rowIndex = {};
+  if (lastRow >= 2) {
+    var data = checkSheet.getRange(startRow, 1, lastRow - startRow + 1, 6).getValues();
+    var duplicateRows = [];
+    for (var i = 0; i < data.length; i++) {
+      var dateKey = formatDateKey(data[i][0]);
+      var period = String(data[i][4] || '').trim();
+      var studentId = cleanStudentId(data[i][5]);
+      if (!dateKey || !period || !studentId) continue;
+      var key = dateKey + '|' + period + '|' + studentId;
+      var rowNum = startRow + i;
+      if (rowIndex[key] !== undefined) { duplicateRows.push(rowIndex[key]); }
+      rowIndex[key] = rowNum;
+    }
+    duplicateRows.sort(function (a, b) { return b - a; });
+    duplicateRows.forEach(function (rowNum) {
+      checkSheet.deleteRow(rowNum);
+      Object.keys(rowIndex).forEach(function (k) {
+        if (rowIndex[k] > rowNum) rowIndex[k] -= 1;
+      });
+    });
+  }
+  var nextFreeRow = checkSheet.getLastRow() + 1;
+  var newRowNumbers = [];
+
+  function putRow(dateKey, period, studentId, name, className, type, approval, reason, checkedAt) {
+    var day = dayOfWeekKo_(parseDateKey(dateKey));
+    var month = dateKey.substring(0, 7);
+    var row = [parseDateKey(dateKey), month, className, day, period, studentId, name, type, approval, reason, checkedAt];
+    var key = dateKey + '|' + period + '|' + studentId;
+    var targetRow = rowIndex[key];
+    if (!targetRow) {
+      targetRow = nextFreeRow;
+      rowIndex[key] = targetRow;
+      nextFreeRow++;
+      newRowNumbers.push(targetRow);
+    }
+    checkSheet.getRange(targetRow, 1, 1, row.length).setValues([row]);
+  }
+
+  return {
+    // 결석 행이 아직 없을 때만 '미확인(N)'으로 새로 만든다. 이미 있으면(승인이든 미확인이든) 그대로 둔다.
+    ensurePending: function (dateKey, period, studentId, name, className, type) {
+      var key = dateKey + '|' + period + '|' + studentId;
+      if (rowIndex[key] !== undefined) return;
+      putRow(dateKey, period, studentId, name, className, type, 'N', '', '');
+    },
+    // 담임이 직접 결석 처리: 있으면 Y로 올리고, 없으면 Y로 승인된 채 새로 만든다.
+    approve: function (dateKey, period, studentId, name, className, type, reason) {
+      putRow(dateKey, period, studentId, name, className, type, 'Y', String(reason || '').trim(), new Date());
+    },
+    finalize: function () {
       if (newRowNumbers.length === 0) return;
       var minRow = Math.min.apply(null, newRowNumbers);
       var maxRow = Math.max.apply(null, newRowNumbers);
       var span = maxRow - minRow + 1;
-      resultSheet.getRange(minRow, 1, span, 1).setNumberFormat('yyyy. m. d');
-      resultSheet.getRange(minRow, 2, span, 1).setNumberFormat('@STRING@');
-      resultSheet.getRange(minRow, 5, span, 1).setNumberFormat('@STRING@');
+      checkSheet.getRange(minRow, 1, span, 1).setNumberFormat('yyyy. m. d');
+      checkSheet.getRange(minRow, 2, span, 1).setNumberFormat('@STRING@');
     }
   };
 }
@@ -557,8 +637,8 @@ function markAbsentByTeacher(dateText, period, className, studentId, reason) {
 
       var writer = createResultUpserter_();
       writer.upsert(dateKey, p, cleanId, '결석', String(reason || '').trim(), now);
+      writer.approveAbsence(dateKey, p, cleanId, info.name, info.className, '자율학습', reason);
       writer.finalize();
-      upsertApprovalRowApproved_(dateKey, p, cleanId, info.name, info.className, '자율학습', reason);
 
       return { result: 'success', message: info.name + ' 학생을 결석 처리했습니다.' };
     });
@@ -567,56 +647,4 @@ function markAbsentByTeacher(dateText, period, className, studentId, reason) {
   }
 }
 
-// 결석 행이 담임허락체크에 아직 없을 때만 '미확인(N)' 상태로 한 줄 추가한다. 이미 있으면
-// (교사가 이미 처리했든, 담임이 승인/반려했든) 기존 상태를 건드리지 않는다.
-// 같은 (날짜,타임,학번)에 해당하는 줄을 찾는다. 혹시 중복으로 여러 줄이 있으면(동시 저장 등)
-// 가장 나중 줄만 남기고 앞의 것들은 지운 뒤, 남은 줄의 행 번호를 돌려준다. 없으면 null.
-function findApprovalRowKeepingLatest_(checkSheet, dateKey, period, studentId) {
-  var lastRow = checkSheet.getLastRow();
-  if (lastRow < 2) return null;
-  var data = checkSheet.getRange(2, 1, lastRow - 1, 6).getValues();
-  var matches = [];
-  for (var i = 0; i < data.length; i++) {
-    if (formatDateKey(data[i][0]) === dateKey && String(data[i][4]).trim() === period && cleanStudentId(data[i][5]) === studentId) {
-      matches.push(i + 2);
-    }
-  }
-  if (matches.length === 0) return null;
-  var keepRow = matches.pop();
-  matches.sort(function (a, b) { return b - a; }); // 뒤에서부터 지워야 행 번호가 안 꼬인다
-  matches.forEach(function (rowNum) {
-    checkSheet.deleteRow(rowNum);
-    if (rowNum < keepRow) keepRow -= 1;
-  });
-  return keepRow;
-}
-
-function ensurePendingApprovalRow_(dateKey, period, studentId, name, className, type) {
-  var checkSheet = getApprovalSheet();
-  if (findApprovalRowKeepingLatest_(checkSheet, dateKey, period, studentId) !== null) return;
-  appendApprovalRow_(checkSheet, dateKey, period, studentId, name, className, type, 'N', '', '');
-}
-
-// 담임이 직접 결석 처리를 한 경우: 이미 있는 행이면 바로 Y로 승인, 없으면 Y로 승인된 채로 새로 만든다.
-function upsertApprovalRowApproved_(dateKey, period, studentId, name, className, type, reason) {
-  var checkSheet = getApprovalSheet();
-  var keepRow = findApprovalRowKeepingLatest_(checkSheet, dateKey, period, studentId);
-  if (keepRow !== null) {
-    checkSheet.getRange(keepRow, 9).setValue('Y');
-    checkSheet.getRange(keepRow, 10).setValue(String(reason || '').trim());
-    checkSheet.getRange(keepRow, 11).setValue(new Date());
-    return;
-  }
-  appendApprovalRow_(checkSheet, dateKey, period, studentId, name, className, type, 'Y', reason, new Date());
-}
-
-function appendApprovalRow_(checkSheet, dateKey, period, studentId, name, className, type, approval, reason, checkedAt) {
-  var day = dayOfWeekKo_(parseDateKey(dateKey));
-  var month = dateKey.substring(0, 7);
-  var row = [parseDateKey(dateKey), month, className, day, period, studentId, name, type, approval, String(reason || '').trim(), checkedAt || ''];
-  var newRowIndex = checkSheet.getLastRow() < 1 ? 2 : checkSheet.getLastRow() + 1;
-  checkSheet.getRange(newRowIndex, 1, 1, row.length).setValues([row]);
-  checkSheet.getRange(newRowIndex, 1, 1, 1).setNumberFormat('yyyy. m. d');
-  checkSheet.getRange(newRowIndex, 2, 1, 1).setNumberFormat('@STRING@');
-}
 
