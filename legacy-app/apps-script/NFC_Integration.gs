@@ -186,6 +186,8 @@ function saveAndroidAttendance(records) {
         sheet.appendRow([timestamp, studentId, month, day, period, dateText, inputMethod, '']);
         writer.upsert(dateText, period, studentId, status, '', timestamp);
       }
+
+      writer.finalize();
     });
   } catch (error) {
     return { result: 'fail', message: error.toString() };

@@ -1963,7 +1963,7 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        var resentCount = 0
+        val toResend = mutableListOf<PendingRecord>()
         targets.forEach { record ->
             val key = "${record.studentNum}|${record.slotName}"
             val serverStatus = serverStatusBySlot[key]
@@ -1972,15 +1972,73 @@ class MainActivity : ComponentActivity() {
             if (verified) {
                 pendingSends.removeAll { it.id == record.id }
             } else {
-                resentCount++
-                sendSingleLogToGoogleAsync(record.studentNum, record.slotName, record.status, record.dateKey, record.recordTime, record.inputType) { ok, _ ->
-                    if (ok) pendingSends.removeAll { it.id == record.id }
-                }
+                toResend.add(record)
             }
         }
 
-        if (resentCount > 0) {
-            statusMessage.value = "🔁 시트에 빠져 있던 기록 ${resentCount}건을 다시 전송했습니다."
+        // 누락된 게 여러 건이어도 하나씩 따로 요청하지 않고 한 번의 요청에 묶어 보낸다. 건마다
+        // 따로 보내면, 서버는 저장 요청을 한 번에 하나씩만 처리하게 잠가 두고 있어서(중복 방지),
+        // 한꺼번에 여러 건이 몰리면 뒤쪽 요청들이 줄 서서 기다리다 잠금 대기시간을 넘겨 "다른
+        // 출결 저장이 진행 중입니다" 오류로 실패하곤 했다.
+        if (toResend.isNotEmpty()) {
+            statusMessage.value = "🔁 시트에 빠져 있던 기록 ${toResend.size}건을 다시 전송 중..."
+            resendPendingRecordsBatch(toResend)
+        }
+    }
+
+    private fun resendPendingRecordsBatch(records: List<PendingRecord>) {
+        val jsonRecords = JSONArray()
+        records.forEach { r ->
+            jsonRecords.put(JSONObject().apply {
+                put("studentNum", r.studentNum)
+                put("slotName", r.slotName)
+                put("status", r.status)
+                put("date", r.dateKey)
+                put("recordTime", r.recordTime)
+                put("inputType", r.inputType)
+            })
+        }
+        val body = JSONObject().apply {
+            put("mode", "SAVE_ATTENDANCE")
+            put("records", jsonRecords)
+        }
+
+        CoroutineScope(Dispatchers.IO).launch {
+            var ok = false
+            var message = ""
+            try {
+                val conn = URL(googleSheetUrl).openConnection() as HttpURLConnection
+                conn.requestMethod = "POST"
+                conn.doOutput = true
+                conn.instanceFollowRedirects = true
+                conn.connectTimeout = 45000
+                conn.readTimeout = 45000
+                conn.setRequestProperty("Content-Type", "application/json; charset=UTF-8")
+                OutputStreamWriter(conn.outputStream, "UTF-8").use { it.write(body.toString()); it.flush() }
+
+                val responseText = if (conn.responseCode == HttpURLConnection.HTTP_OK) {
+                    BufferedReader(InputStreamReader(conn.inputStream, "UTF-8")).use { it.readText() }
+                } else "fail_${conn.responseCode}"
+
+                val json = JSONObject(responseText)
+                ok = json.optString("result", "fail") == "success"
+                message = json.optString("message", responseText)
+            } catch (e: Exception) {
+                ok = false
+                message = e.message ?: "알 수 없는 오류"
+            }
+
+            withContext(Dispatchers.Main) {
+                if (ok) {
+                    val ids = records.map { it.id }.toSet()
+                    pendingSends.removeAll { it.id in ids }
+                    statusMessage.value = "🔁 시트에 빠져 있던 기록 ${records.size}건을 다시 전송했습니다."
+                } else {
+                    Log.e("NFC_SEND", "일괄 재전송 실패: $message")
+                    statusMessage.value = "⚠️ 재전송 실패: $message"
+                    Toast.makeText(this@MainActivity, "재전송 실패: $message", Toast.LENGTH_LONG).show()
+                }
+            }
         }
     }
 

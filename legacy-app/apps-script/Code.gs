@@ -115,7 +115,9 @@ function submitWebAttendance(studentId) {
     var sheet = getAttendanceSheet_();
     deletePreexistingRow(sheet, info.dateText, info.period, cleanId);
     sheet.appendRow([now, cleanId, info.month, info.day, info.period, info.dateText, '웹앱출석', '']);
-    createResultUpserter_().upsert(info.dateText, info.period, cleanId, '출석', '', now);
+    var writer = createResultUpserter_();
+    writer.upsert(info.dateText, info.period, cleanId, '출석', '', now);
+    writer.finalize();
   });
   return {
     success: true, message: '출석 완료', studentId: cleanId,
@@ -146,6 +148,7 @@ function submitWebReason(studentId, reasonDate, reasonPeriods, reasonText) {
       sheet.appendRow([now, cleanId, month, day, p, dateText, '웹앱사유', trimmedReason]);
       writer.upsert(dateText, p, cleanId, '결석', trimmedReason, now);
     });
+    writer.finalize();
   });
 
   return { success: true, message: '사유 제출 완료', period: month + ' ' + day + ' ' + periods.join(',') };

@@ -305,6 +305,12 @@ function createResultUpserter_() {
     });
   }
   var nextFreeRow = resultSheet.getLastRow() + 1;
+  // 서식(날짜/문자열 고정) 지정은 API 호출 하나하나가 시간이 걸려서, 기록마다 매번 부르면
+  // (특히 "시트 전송" 일괄 전송처럼 한 번에 여러 건을 처리할 때) 잠금을 오래 붙잡게 되어
+  // 다른 기기의 저장이 줄줄이 실패한다. 그래서 새로 추가되는 줄만 모아뒀다가 finalize()에서
+  // 한 번에(최대 3번) 처리한다. 이미 있던 줄을 고쳐 쓰는 건 예전에 이미 서식이 맞춰져 있으므로
+  // 다시 지정할 필요가 없다.
+  var newRowNumbers = [];
 
   return {
     // 한 학생의 한 (날짜,타임) 출결을 기록한다. 이미 그 줄이 있으면 덮어쓰고, 없으면 한 줄만 추가한다.
@@ -327,11 +333,9 @@ function createResultUpserter_() {
         targetRow = nextFreeRow;
         rowIndex[key] = targetRow;
         nextFreeRow++;
+        newRowNumbers.push(targetRow);
       }
       resultSheet.getRange(targetRow, 1, 1, row.length).setValues([row]);
-      resultSheet.getRange(targetRow, 1, 1, 1).setNumberFormat('yyyy. m. d');
-      resultSheet.getRange(targetRow, 2, 1, 1).setNumberFormat('@STRING@');
-      resultSheet.getRange(targetRow, 5, 1, 1).setNumberFormat('@STRING@');
 
       // 결석이면, 담임이 아직 확인 전인 '미확인(N)' 행을 담임허락체크에 미리 만들어 둔다.
       // 이미 승인/반려 기록이 있으면 손대지 않는다(markAbsentByTeacher가 직접 Y로 올리는 경우 제외).
@@ -349,7 +353,22 @@ function createResultUpserter_() {
       Object.keys(rowIndex).forEach(function (k) {
         if (rowIndex[k] > targetRow) rowIndex[k] -= 1;
       });
+      for (var j = newRowNumbers.length - 1; j >= 0; j--) {
+        if (newRowNumbers[j] === targetRow) { newRowNumbers.splice(j, 1); }
+        else if (newRowNumbers[j] > targetRow) { newRowNumbers[j] -= 1; }
+      }
       nextFreeRow -= 1;
+    },
+    // 이번 요청에서 새로 추가된 줄에 서식을 한 번에 입힌다. upsert/remove를 다 호출한 뒤 반드시
+    // 한 번 불러야 한다 (잠금을 해제하기 전, 같은 요청 안에서).
+    finalize: function () {
+      if (newRowNumbers.length === 0) return;
+      var minRow = Math.min.apply(null, newRowNumbers);
+      var maxRow = Math.max.apply(null, newRowNumbers);
+      var span = maxRow - minRow + 1;
+      resultSheet.getRange(minRow, 1, span, 1).setNumberFormat('yyyy. m. d');
+      resultSheet.getRange(minRow, 2, span, 1).setNumberFormat('@STRING@');
+      resultSheet.getRange(minRow, 5, span, 1).setNumberFormat('@STRING@');
     }
   };
 }
@@ -461,6 +480,7 @@ function markAbsentByTeacher(dateText, period, className, studentId, reason) {
 
       var writer = createResultUpserter_();
       writer.upsert(dateKey, p, cleanId, '결석', String(reason || '').trim(), now);
+      writer.finalize();
       upsertApprovalRowApproved_(dateKey, p, cleanId, info.name, info.className, '자율학습', reason);
 
       return { result: 'success', message: info.name + ' 학생을 결석 처리했습니다.' };
