@@ -576,20 +576,10 @@ class MainActivity : ComponentActivity() {
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF74B9FF)),
                     shape = RoundedCornerShape(4.dp),
-                    modifier = Modifier.padding(end = 6.dp).height(36.dp),
-                    contentPadding = PaddingValues(horizontal = 10.dp)
-                ) {
-                    Text("🔄", fontSize = 14.sp, color = Color.White)
-                }
-
-                Button(
-                    onClick = { sendAttendanceLogToGoogle() },
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2ED573)),
-                    shape = RoundedCornerShape(4.dp),
                     modifier = Modifier.padding(end = 12.dp).height(36.dp),
                     contentPadding = PaddingValues(horizontal = 10.dp)
                 ) {
-                    Text("시트 전송 📤", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                    Text("🔄", fontSize = 14.sp, color = Color.White)
                 }
             }
 
@@ -599,12 +589,36 @@ class MainActivity : ComponentActivity() {
 
             val titleText = "📊 ${selectedDate.value} ${if (selectedClass.value == "전체") "전체" else selectedClass.value} 명단 (총 ${filteredStudents.size}명)"
 
+            // 방과후/야간1/야간2 중 하나라도 기록(출석/지각/결석/학사)이 있으면 "출결확인"된 것으로 센다.
+            val afterSchoolChecked = filteredStudents.count { (dailyStatusMap[it.studentNum]?.afterSchool ?: "").isNotEmpty() }
+            val night1Checked = filteredStudents.count { (dailyStatusMap[it.studentNum]?.night1 ?: "").isNotEmpty() }
+            val night2Checked = filteredStudents.count { (dailyStatusMap[it.studentNum]?.night2 ?: "").isNotEmpty() }
+            val anyChecked = filteredStudents.count { student ->
+                val s = dailyStatusMap[student.studentNum]
+                s != null && (s.afterSchool.isNotEmpty() || s.night1.isNotEmpty() || s.night2.isNotEmpty())
+            }
+
             Text(
                 text = titleText,
                 fontSize = 13.sp, fontWeight = FontWeight.Bold,
                 modifier = Modifier.padding(start = 16.dp, top = 8.dp, bottom = 4.dp),
                 color = Color.Gray
             )
+
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 2.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Text("✅ 출결확인 $anyChecked / ${filteredStudents.size}명", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color(0xFF0984E3))
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, bottom = 6.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Text("방과후 ${afterSchoolChecked}명", fontSize = 11.sp, color = Color.Gray)
+                Text("야간1 ${night1Checked}명", fontSize = 11.sp, color = Color.Gray)
+                Text("야간2 ${night2Checked}명", fontSize = 11.sp, color = Color.Gray)
+            }
 
             if (filteredStudents.isEmpty()) {
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -1958,11 +1972,6 @@ class MainActivity : ComponentActivity() {
         queue.add(stringRequest)
     }
 
-    // 날짜를 바꿀 때마다 그 날짜의 기록을 서버에서 통째로 다시 받아온다.
-    // 화면에서 처리한 적 있는 기록(pendingSends) 중 이 날짜에 해당하는 것들을, 방금 서버에서
-    // 받아온 스프레드시트의 실제 상태(serverData)와 하나씩 대조한다. 있어야 할 기록이 없거나
-    // ('리셋'인데 아직 안 지워졌거나) 다르면, 그 자리에서 원래 보냈던 그대로 다시 전송한다.
-    // 🔄 새로고침, 날짜 변경 조회, "시트 전송" 모두 이 대조를 거치게 되어 있다.
     // 새로 받아온 그 날짜의 서버 상태와 대조해서, 이미 반영된 게 확인되면 큐에서 지운다(정리용).
     // 아직 확인 안 된 건 그대로 큐에 남겨둔다 - 5분 타이머나 🔄 새로고침이 알아서 보낸다.
     private fun reconcilePendingSends(dateText: String, serverData: JSONArray?) {
@@ -2291,88 +2300,6 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun sendAttendanceLogToGoogle() {
-        val dateKey = selectedDate.value
-        val now = Calendar.getInstance()
-        val timeString = String.format("%02d:%02d:00", now.get(Calendar.HOUR_OF_DAY), now.get(Calendar.MINUTE))
-        val jsonRecords = JSONArray()
-
-        masterStudentList.forEach { student ->
-            val status = dailyStatusMap[student.studentNum] ?: return@forEach
-            listOf("방과후" to status.afterSchool, "야간1" to status.night1, "야간2" to status.night2).forEach { (slot, raw) ->
-                val trimmed = raw.trim()
-                if (trimmed.isEmpty()) return@forEach
-                val normalized = when {
-                    trimmed.contains("출석") -> "출석"
-                    trimmed.contains("지각") -> "지각"
-                    trimmed == "결석" -> "결석"
-                    trimmed == "학사" -> "학사"
-                    else -> return@forEach
-                }
-                jsonRecords.put(JSONObject().apply {
-                    put("studentNum", student.studentNum)
-                    put("slotName", slot)
-                    put("status", normalized)
-                    put("date", dateKey)
-                    put("recordTime", timeString)
-                    put("inputType", "수동")
-                })
-            }
-        }
-
-        if (jsonRecords.length() == 0) {
-            Toast.makeText(this, "실제 출결 처리된 학생이 없습니다.", Toast.LENGTH_LONG).show()
-            return
-        }
-
-        statusMessage.value = "📤 $dateKey 출결 ${jsonRecords.length()}건 일괄 전송 중..."
-        val mainBody = JSONObject()
-        mainBody.put("mode", "SAVE_ATTENDANCE")
-        mainBody.put("records", jsonRecords)
-
-        CoroutineScope(Dispatchers.Main).launch {
-            val result: String = withContext(Dispatchers.IO) {
-                try {
-                    val url = URL(googleSheetUrl)
-                    val conn = url.openConnection() as HttpURLConnection
-                    conn.requestMethod = "POST"
-                    conn.doOutput = true
-                    conn.doInput = true
-                    conn.instanceFollowRedirects = true
-                    conn.connectTimeout = 45000
-                    conn.readTimeout = 45000
-                    conn.setRequestProperty("Content-Type", "application/json; charset=UTF-8")
-
-                    val writer = OutputStreamWriter(conn.outputStream, "UTF-8")
-                    writer.write(mainBody.toString())
-                    writer.flush()
-                    writer.close()
-
-                    if (conn.responseCode == HttpURLConnection.HTTP_OK) {
-                        BufferedReader(InputStreamReader(conn.inputStream, "UTF-8")).use { it.readText() }
-                    } else "fail_${conn.responseCode}"
-                } catch (e: Exception) { "fail:${e.message}" }
-            }
-            try {
-                val jsonResponse = JSONObject(result)
-                if (jsonResponse.optString("result") == "success") {
-                    statusMessage.value = "✅ 일괄 전송 성공: ${jsonRecords.length()}건 (${jsonResponse.optString("message")})"
-                    Toast.makeText(this@MainActivity, "구글 시트에 출결 데이터가 저장되었습니다.", Toast.LENGTH_SHORT).show()
-                    // 화면에 보이는 모든 상태를 방금 통째로 다시 보냈으므로, 이 날짜의 미확인
-                    // 목록은 전부 해소된 것으로 본다.
-                    pendingSends.removeAll { it.dateKey == dateKey }
-                    savePendingSendsToPrefs()
-                } else {
-                    val msg = jsonResponse.optString("message", result)
-                    statusMessage.value = "⚠️ 전송 실패: $msg"
-                    Toast.makeText(this@MainActivity, "전송 실패: $msg", Toast.LENGTH_LONG).show()
-                }
-            } catch (e: Exception) {
-                statusMessage.value = "❌ 구글 서버 통신 마찰 발생: $result"
-                Toast.makeText(this@MainActivity, "전송 실패 (응답 해석 오류)", Toast.LENGTH_LONG).show()
-            }
-        }
-    }
 
     private fun fetchStudentListFromGoogle() {
         statusMessage.value = "학생 목록 불러오는 중..."
