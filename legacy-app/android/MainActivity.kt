@@ -612,7 +612,7 @@ class MainActivity : ComponentActivity() {
                 Text("✅ 출결확인 $anyChecked / ${filteredStudents.size}명", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color(0xFF0984E3))
             }
             Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, bottom = 6.dp),
+                modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 6.dp),
                 horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 Text("방과후 ${afterSchoolChecked}명", fontSize = 11.sp, color = Color.Gray)
