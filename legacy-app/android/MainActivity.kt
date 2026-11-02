@@ -5,6 +5,7 @@ import android.app.PendingIntent
 import android.content.Intent
 import android.nfc.NfcAdapter
 import android.nfc.Tag
+import android.content.Context
 import android.os.Bundle
 import android.util.Log
 import android.widget.Toast
@@ -242,9 +243,20 @@ class MainActivity : ComponentActivity() {
             PendingIntent.FLAG_MUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 
+        loadPendingSendsFromPrefs()
         fetchStudentRosterFromGoogle()
+        if (pendingSends.isNotEmpty()) flushPendingSends() // 지난 세션에서 못 보낸 게 있으면 바로 시도
 
         setContent {
+            // 탭할 때마다 바로 서버로 보내지 않고 기기 안에 모아뒀다가(pendingSends), 5분마다
+            // 한 번에 묶어서 보낸다. 수업 시작 시간대처럼 학생들이 몰려서 태깅해도 서버에는
+            // 5분에 한 번 정도만 요청이 가니, 저장 잠금 경합(그로 인한 타임아웃)이 크게 줄어든다.
+            LaunchedEffect(Unit) {
+                while (true) {
+                    delay(5 * 60 * 1000L)
+                    flushPendingSends()
+                }
+            }
             MaterialTheme {
                 Surface(modifier = Modifier.fillMaxSize(), color = Color(0xFFF5F6F8)) {
                     if (showAdminPasswordDialog.value) {
@@ -335,6 +347,9 @@ class MainActivity : ComponentActivity() {
     override fun onPause() {
         super.onPause()
         nfcAdapter?.disableForegroundDispatch(this)
+        // 다음 화면으로 넘어가거나 앱이 백그라운드로 가기 전에, 쌓인 기록을 미리 한 번 보내둔다
+        // (5분을 다 기다리지 않아도 되도록 하는 최선의 노력일 뿐, 실패해도 큐에 남아 다음 기회에 다시 보낸다).
+        if (pendingSends.isNotEmpty()) flushPendingSends()
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -421,10 +436,7 @@ class MainActivity : ComponentActivity() {
 
                     val nfcRecordTime = "$timeString:00"
                     val nfcPendingId = "${matchedStudent.studentNum}|$processedSlot|$todayKey|${System.nanoTime()}"
-                    pendingSends.add(PendingRecord(nfcPendingId, matchedStudent.studentNum, matchedStudent.name, processedSlot, sendStatus, todayKey, nfcRecordTime, "NFC"))
-                    sendSingleLogToGoogleAsync(matchedStudent.studentNum, processedSlot, sendStatus, todayKey, nfcRecordTime, "NFC") { ok, _ ->
-                        if (ok) pendingSends.removeAll { it.id == nfcPendingId }
-                    }
+                    enqueuePendingSend(PendingRecord(nfcPendingId, matchedStudent.studentNum, matchedStudent.name, processedSlot, sendStatus, todayKey, nfcRecordTime, "NFC"))
                 } else {
                     Toast.makeText(this, "${matchedStudent.name}: 자습 교시 운영 외 시간대 태깅입니다.", Toast.LENGTH_LONG).show()
                     if (isStudentMode.value) {
@@ -511,15 +523,15 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
-            // 전송은 시도했지만 시트 반영이 아직 확인되지 않은 기록이 있으면 알려준다.
-            // 🔄 새로고침을 누르면 시트와 대조해서 자동으로 다시 전송된다.
+            // 아직 시트로 보내지 않고 기기에 모아둔(대기 중인) 기록이 있으면 알려준다.
+            // 5분마다 자동으로 한꺼번에 전송되고, 🔄를 누르면 지금 바로 보낼 수 있다.
             val pendingForThisDate = pendingSends.count { it.dateKey == selectedDate.value }
             if (pendingForThisDate > 0) {
                 Box(
                     modifier = Modifier.fillMaxWidth().background(Color(0xFFFFF3CD)).padding(horizontal = 12.dp, vertical = 6.dp)
                 ) {
                     Text(
-                        text = "⏳ 시트 반영 확인 중 ${pendingForThisDate}건 - 🔄 새로고침하면 누락된 기록을 자동으로 다시 보냅니다.",
+                        text = "⏳ 전송 대기 중 ${pendingForThisDate}건 - 5분마다 자동 전송되며, 🔄를 누르면 지금 바로 보냅니다.",
                         fontSize = 11.sp, color = Color(0xFF8A6D3B)
                     )
                 }
@@ -557,7 +569,11 @@ class MainActivity : ComponentActivity() {
                 }
 
                 Button(
-                    onClick = { fetchStudentRosterFromGoogle() },
+                    onClick = {
+                        // 5분을 기다리지 않고 지금 바로 큐를 비우고 싶을 때를 위한 수동 동기화.
+                        flushPendingSends()
+                        fetchStudentRosterFromGoogle()
+                    },
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF74B9FF)),
                     shape = RoundedCornerShape(4.dp),
                     modifier = Modifier.padding(end = 6.dp).height(36.dp),
@@ -1890,14 +1906,11 @@ class MainActivity : ComponentActivity() {
         statusMessage.value = "🎯 [수동 변경] ${student.name} -> $slot [$action] 반영 (${selectedDate.value})"
 
         // '리셋'도 서버에 보내서 실제로 지운다. (과거 버그: 리셋은 화면에서만 지워지고 서버에는
-        // 전달되지 않아 새로고침하면 되돌아왔다.) 전송 확인 전까지는 pendingSends에 남겨둬서
-        // 다음 새로고침/날짜 조회 때 시트와 대조해 누락됐으면 다시 보낸다.
+        // 전달되지 않아 새로고침하면 되돌아왔다.) 지금 바로 서버에 보내지 않고 큐에 쌓아뒀다가
+        // 5분마다(또는 🔄 새로고침 시) 한 번에 보낸다.
         if (action in listOf("출석", "지각", "결석", "학사", "리셋")) {
             val pendingId = "${student.studentNum}|$slot|${selectedDate.value}|${System.nanoTime()}"
-            pendingSends.add(PendingRecord(pendingId, student.studentNum, student.name, slot, action, selectedDate.value, recordTime, "수동"))
-            sendSingleLogToGoogleAsync(student.studentNum, slot, action, selectedDate.value, recordTime, "수동") { ok, _ ->
-                if (ok) pendingSends.removeAll { it.id == pendingId }
-            }
+            enqueuePendingSend(PendingRecord(pendingId, student.studentNum, student.name, slot, action, selectedDate.value, recordTime, "수동"))
         }
     }
 
@@ -1950,6 +1963,8 @@ class MainActivity : ComponentActivity() {
     // 받아온 스프레드시트의 실제 상태(serverData)와 하나씩 대조한다. 있어야 할 기록이 없거나
     // ('리셋'인데 아직 안 지워졌거나) 다르면, 그 자리에서 원래 보냈던 그대로 다시 전송한다.
     // 🔄 새로고침, 날짜 변경 조회, "시트 전송" 모두 이 대조를 거치게 되어 있다.
+    // 새로 받아온 그 날짜의 서버 상태와 대조해서, 이미 반영된 게 확인되면 큐에서 지운다(정리용).
+    // 아직 확인 안 된 건 그대로 큐에 남겨둔다 - 5분 타이머나 🔄 새로고침이 알아서 보낸다.
     private fun reconcilePendingSends(dateText: String, serverData: JSONArray?) {
         val targets = pendingSends.filter { it.dateKey == dateText }
         if (targets.isEmpty()) return
@@ -1963,30 +1978,33 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        val toResend = mutableListOf<PendingRecord>()
+        var confirmedCount = 0
         targets.forEach { record ->
             val key = "${record.studentNum}|${record.slotName}"
             val serverStatus = serverStatusBySlot[key]
             val verified = if (record.status == "리셋") serverStatus == null else serverStatus == record.status
-
             if (verified) {
                 pendingSends.removeAll { it.id == record.id }
-            } else {
-                toResend.add(record)
+                confirmedCount++
             }
         }
-
-        // 누락된 게 여러 건이어도 하나씩 따로 요청하지 않고 한 번의 요청에 묶어 보낸다. 건마다
-        // 따로 보내면, 서버는 저장 요청을 한 번에 하나씩만 처리하게 잠가 두고 있어서(중복 방지),
-        // 한꺼번에 여러 건이 몰리면 뒤쪽 요청들이 줄 서서 기다리다 잠금 대기시간을 넘겨 "다른
-        // 출결 저장이 진행 중입니다" 오류로 실패하곤 했다.
-        if (toResend.isNotEmpty()) {
-            statusMessage.value = "🔁 시트에 빠져 있던 기록 ${toResend.size}건을 다시 전송 중..."
-            resendPendingRecordsBatch(toResend)
-        }
+        if (confirmedCount > 0) savePendingSendsToPrefs()
     }
 
-    private fun resendPendingRecordsBatch(records: List<PendingRecord>) {
+    // 기록 한 건을 큐에 넣는다 - 여기서 서버로 바로 보내지 않는다. 화면(배지)은 이미 바로
+    // 바뀌어 있으므로, 실제 전송은 flushPendingSends()가 5분마다/새로고침 시 한꺼번에 처리한다.
+    private fun enqueuePendingSend(record: PendingRecord) {
+        pendingSends.add(record)
+        savePendingSendsToPrefs()
+    }
+
+    // 큐에 쌓인 기록을 전부 한 번의 요청으로 묶어 보낸다. 탭/터치마다 따로 보내지 않고 이렇게
+    // 모아 보내면, 학생들이 몰리는 시간대에도 서버에는 드문드문 요청이 가므로 저장 잠금 경합
+    // (그로 인한 타임아웃·"다른 출결 저장이 진행 중" 오류)이 크게 줄어든다.
+    private fun flushPendingSends() {
+        if (pendingSends.isEmpty()) return
+        val records = pendingSends.toList()
+
         val jsonRecords = JSONArray()
         records.forEach { r ->
             jsonRecords.put(JSONObject().apply {
@@ -2002,6 +2020,8 @@ class MainActivity : ComponentActivity() {
             put("mode", "SAVE_ATTENDANCE")
             put("records", jsonRecords)
         }
+
+        statusMessage.value = "📤 기록 ${records.size}건 전송 중..."
 
         CoroutineScope(Dispatchers.IO).launch {
             var ok = false
@@ -2032,13 +2052,52 @@ class MainActivity : ComponentActivity() {
                 if (ok) {
                     val ids = records.map { it.id }.toSet()
                     pendingSends.removeAll { it.id in ids }
-                    statusMessage.value = "🔁 시트에 빠져 있던 기록 ${records.size}건을 다시 전송했습니다."
+                    savePendingSendsToPrefs()
+                    statusMessage.value = "✅ 기록 ${records.size}건 전송 완료"
                 } else {
-                    Log.e("NFC_SEND", "일괄 재전송 실패: $message")
-                    statusMessage.value = "⚠️ 재전송 실패: $message"
-                    Toast.makeText(this@MainActivity, "재전송 실패: $message", Toast.LENGTH_LONG).show()
+                    // 실패해도 큐에 그대로 남아 있으므로(이미 추가했고 여기서 지우지 않는다) 다음
+                    // 5분 주기나 새로고침 때 다시 시도된다.
+                    Log.e("NFC_SEND", "일괄 전송 실패: $message")
+                    statusMessage.value = "⚠️ 전송 실패(잠시 후 자동 재시도): $message"
+                    Toast.makeText(this@MainActivity, "전송 실패: $message", Toast.LENGTH_LONG).show()
                 }
             }
+        }
+    }
+
+    private fun savePendingSendsToPrefs() {
+        val prefs = getSharedPreferences("nfc_outbox", Context.MODE_PRIVATE)
+        val arr = JSONArray()
+        pendingSends.forEach { r ->
+            arr.put(JSONObject().apply {
+                put("id", r.id); put("studentNum", r.studentNum); put("name", r.name)
+                put("slotName", r.slotName); put("status", r.status); put("dateKey", r.dateKey)
+                put("recordTime", r.recordTime); put("inputType", r.inputType)
+            })
+        }
+        prefs.edit().putString("queue", arr.toString()).apply()
+    }
+
+    // 앱이 중간에 종료돼도 아직 못 보낸 기록을 잃어버리지 않도록, 큐를 기기에 저장해뒀다가
+    // 다음 실행 때 다시 불러온다.
+    private fun loadPendingSendsFromPrefs() {
+        val prefs = getSharedPreferences("nfc_outbox", Context.MODE_PRIVATE)
+        val raw = prefs.getString("queue", null) ?: return
+        try {
+            val arr = JSONArray(raw)
+            pendingSends.clear()
+            for (i in 0 until arr.length()) {
+                val o = arr.getJSONObject(i)
+                pendingSends.add(
+                    PendingRecord(
+                        id = o.getString("id"), studentNum = o.getString("studentNum"), name = o.getString("name"),
+                        slotName = o.getString("slotName"), status = o.getString("status"), dateKey = o.getString("dateKey"),
+                        recordTime = o.getString("recordTime"), inputType = o.getString("inputType")
+                    )
+                )
+            }
+        } catch (e: Exception) {
+            Log.e("NFC_SEND", "저장된 전송 큐 불러오기 실패: ${e.message}")
         }
     }
 
@@ -2232,68 +2291,6 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    // NFC 태깅 / 수동 처리 모두 이 함수 하나를 거친다. 과거에는 전송 실패가 Log.e로만 남고
-    // 화면에는 아무 표시도 없어서, 선생님은 전송이 됐는지 안 됐는지 알 수 없었다. 이제는
-    // 실패하면 상태 메시지와 Toast로 반드시 알린다.
-    private fun sendSingleLogToGoogleAsync(
-        studentNum: String, slotName: String, status: String,
-        dateKey: String, recordTime: String, inputType: String,
-        onResult: ((Boolean, String) -> Unit)? = null
-    ) {
-        CoroutineScope(Dispatchers.IO).launch {
-            var ok = false
-            var message = ""
-            try {
-                val body = JSONObject().apply {
-                    put("mode", "SAVE_ATTENDANCE")
-                    put("records", JSONArray().put(JSONObject().apply {
-                        put("studentNum", studentNum)
-                        put("slotName", slotName)
-                        put("status", status)
-                        put("date", dateKey)
-                        put("recordTime", recordTime)
-                        put("inputType", inputType)
-                    }))
-                }
-
-                val conn = URL(googleSheetUrl).openConnection() as HttpURLConnection
-                conn.requestMethod = "POST"
-                conn.doOutput = true
-                conn.instanceFollowRedirects = true
-                conn.connectTimeout = 45000
-                conn.readTimeout = 45000
-                conn.setRequestProperty("Content-Type", "application/json; charset=UTF-8")
-
-                OutputStreamWriter(conn.outputStream, "UTF-8").use {
-                    it.write(body.toString())
-                    it.flush()
-                }
-
-                val responseText = if (conn.responseCode == HttpURLConnection.HTTP_OK) {
-                    BufferedReader(InputStreamReader(conn.inputStream, "UTF-8")).use { it.readText() }
-                } else "fail_${conn.responseCode}"
-
-                val json = JSONObject(responseText)
-                ok = json.optString("result", "fail") == "success"
-                message = json.optString("message", responseText)
-            } catch (e: Exception) {
-                ok = false
-                message = e.message ?: "알 수 없는 오류"
-            }
-
-            withContext(Dispatchers.Main) {
-                if (ok) {
-                    Log.d("NFC_SEND", "단건 전송 성공: $message")
-                } else {
-                    Log.e("NFC_SEND", "단건 전송 실패: $message")
-                    statusMessage.value = "⚠️ 전송 실패: $message"
-                    Toast.makeText(this@MainActivity, "전송 실패: $message", Toast.LENGTH_LONG).show()
-                }
-                onResult?.invoke(ok, message)
-            }
-        }
-    }
-
     private fun sendAttendanceLogToGoogle() {
         val dateKey = selectedDate.value
         val now = Calendar.getInstance()
@@ -2364,6 +2361,7 @@ class MainActivity : ComponentActivity() {
                     // 화면에 보이는 모든 상태를 방금 통째로 다시 보냈으므로, 이 날짜의 미확인
                     // 목록은 전부 해소된 것으로 본다.
                     pendingSends.removeAll { it.dateKey == dateKey }
+                    savePendingSendsToPrefs()
                 } else {
                     val msg = jsonResponse.optString("message", result)
                     statusMessage.value = "⚠️ 전송 실패: $msg"
