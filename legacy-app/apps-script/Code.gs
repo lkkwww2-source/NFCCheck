@@ -112,9 +112,8 @@ function submitWebAttendance(studentId) {
   }
   var cleanId = cleanStudentId(studentId);
   withAttendanceLock_(function () {
-    var sheet = getAttendanceSheet_();
-    deletePreexistingRow(sheet, info.dateText, info.period, cleanId);
-    sheet.appendRow([now, cleanId, info.month, info.day, info.period, info.dateText, '웹앱출석', '']);
+    var rawLog = createRawLogWriter_();
+    rawLog.upsert(info.dateText, info.period, cleanId, [now, cleanId, info.month, info.day, info.period, info.dateText, '웹앱출석', '']);
     var writer = createResultUpserter_();
     writer.upsert(info.dateText, info.period, cleanId, '출석', '', now);
     writer.finalize();
@@ -140,12 +139,11 @@ function submitWebReason(studentId, reasonDate, reasonPeriods, reasonText) {
   var trimmedReason = String(reasonText || '').trim();
 
   withAttendanceLock_(function () {
-    var sheet = getAttendanceSheet_();
+    var rawLog = createRawLogWriter_();
     var writer = createResultUpserter_();
     periods.forEach(function (period) {
       var p = String(period).trim();
-      deletePreexistingRow(sheet, dateText, p, cleanId);
-      sheet.appendRow([now, cleanId, month, day, p, dateText, '웹앱사유', trimmedReason]);
+      rawLog.upsert(dateText, p, cleanId, [now, cleanId, month, day, p, dateText, '웹앱사유', trimmedReason]);
       writer.upsert(dateText, p, cleanId, '결석', trimmedReason, now);
     });
     writer.finalize();

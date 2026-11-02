@@ -159,7 +159,7 @@ function saveAndroidAttendance(records) {
     // 거의 동시에 들어온 다른 저장 요청과 겹쳐서 같은 줄이 두 번 생기는 일이 없도록, 이 배치
     // 전체를 하나의 잠금으로 묶는다. (여러 건이 와도 안에서는 writer 하나를 계속 재사용한다.)
     withAttendanceLock_(function () {
-      var sheet = getAttendanceSheet_();
+      var rawLog = createRawLogWriter_();
       var writer = createResultUpserter_();
 
       for (var i = 0; i < records.length; i++) {
@@ -172,10 +172,9 @@ function saveAndroidAttendance(records) {
         var recordTime = String(rec.recordTime || '00:00:00').trim();
         if (!studentId || !dateText || !status) continue;
 
-        deletePreexistingAttendanceRow_(sheet, dateText, period, studentId);
-
         if (status === '리셋') {
-          writer.remove(dateText, period, studentId); // 리셋은 기존 행만 지우고 새로 쓰지 않음
+          rawLog.remove(dateText, period, studentId); // 리셋은 기존 행만 지우고 새로 쓰지 않음
+          writer.remove(dateText, period, studentId);
           continue;
         }
 
@@ -183,7 +182,7 @@ function saveAndroidAttendance(records) {
         var day = dayOfWeekKo_(parseDateKey(dateText));
         var timestamp = new Date(dateText + 'T' + recordTime);
         var inputMethod = encodeAttendanceMethod_(rec.inputType, status);
-        sheet.appendRow([timestamp, studentId, month, day, period, dateText, inputMethod, '']);
+        rawLog.upsert(dateText, period, studentId, [timestamp, studentId, month, day, period, dateText, inputMethod, '']);
         writer.upsert(dateText, period, studentId, status, '', timestamp);
       }
 

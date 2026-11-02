@@ -77,6 +77,71 @@ function getAttendanceSheet_() {
   return sheet;
 }
 
+// 웹앱응답(원본 로그)에 쓸 때도 출결결과와 같은 이유로 매번 시트 전체를 읽지 않는다. 기존에는
+// 기록 한 건을 쓸 때마다 "같은 (날짜,타임,학번) 줄을 지우고 새로 추가"하면서 매번
+// getDataRange()로 시트 전체를 읽었는데, 안드로이드가 여러 건을 한 번에 보내는 지금은 배치 안
+// 건수만큼 반복해서 전체를 읽는 셈이라 더 심했다. 이제 요청당 한 번만(최근 500줄) 인덱싱해서
+// 재사용하고, 같은 줄은 지우고 다시 쓰는 대신 그 자리에서 값만 덮어쓴다.
+function createRawLogWriter_() {
+  var sheet = getAttendanceSheet_();
+  var lastRow = sheet.getLastRow();
+  var RECENT_WINDOW_ROWS = 500; // 출결결과 upsert와 같은 이유로 최근 분량만 본다.
+  var startRow = Math.max(2, lastRow - RECENT_WINDOW_ROWS + 1);
+
+  var rowIndex = {};
+  if (lastRow >= 2) {
+    var data = sheet.getRange(startRow, 1, lastRow - startRow + 1, 6).getValues(); // A~F: 타임스탬프~실제날짜
+    var duplicateRows = [];
+    for (var i = 0; i < data.length; i++) {
+      var studentId = cleanStudentId(data[i][1]);
+      var period = String(data[i][4] || '').trim();
+      var dateText = normalizeDateText(data[i][5]);
+      if (!studentId || !period || !dateText) continue;
+      var key = dateText + '|' + period + '|' + studentId;
+      var rowNum = startRow + i;
+      if (rowIndex[key] !== undefined) {
+        duplicateRows.push(rowIndex[key]); // 먼저 찾은(더 위의) 줄은 중복으로 보고 지운다
+      }
+      rowIndex[key] = rowNum;
+    }
+    duplicateRows.sort(function (a, b) { return b - a; });
+    duplicateRows.forEach(function (rowNum) {
+      sheet.deleteRow(rowNum);
+      Object.keys(rowIndex).forEach(function (k) {
+        if (rowIndex[k] > rowNum) rowIndex[k] -= 1;
+      });
+    });
+  }
+  var nextFreeRow = sheet.getLastRow() + 1;
+
+  return {
+    // rowValues: [타임스탬프, 학번, 신청월, 요일, 타임, 실제날짜, 입력방식, 사전내용] 8칸 그대로.
+    // 같은 (날짜,타임,학번) 줄이 있으면 덮어써서 정정하고, 없으면 한 줄 추가한다.
+    upsert: function (dateText, period, studentId, rowValues) {
+      var key = dateText + '|' + period + '|' + studentId;
+      var targetRow = rowIndex[key];
+      if (!targetRow) {
+        targetRow = nextFreeRow;
+        rowIndex[key] = targetRow;
+        nextFreeRow++;
+      }
+      sheet.getRange(targetRow, 1, 1, rowValues.length).setValues([rowValues]);
+    },
+    // '리셋' 등으로 원본 로그 자체를 지워야 할 때 쓴다.
+    remove: function (dateText, period, studentId) {
+      var key = dateText + '|' + period + '|' + studentId;
+      var targetRow = rowIndex[key];
+      if (!targetRow) return;
+      sheet.deleteRow(targetRow);
+      delete rowIndex[key];
+      Object.keys(rowIndex).forEach(function (k) {
+        if (rowIndex[k] > targetRow) rowIndex[k] -= 1;
+      });
+      nextFreeRow -= 1;
+    }
+  };
+}
+
 // 웹앱응답 시트에서 같은 (실제날짜,타임,학번) 기록이 여러 줄 있으면, 타임스탬프가 가장 늦은
 // 것만 남기고 나머지는 지운다. 동시 저장 등으로 과거에 생겼을 수 있는 중복을 스프레드시트에서
 // 직접(메뉴 버튼으로) 정리할 때 쓴다.
@@ -481,15 +546,14 @@ function markAbsentByTeacher(dateText, period, className, studentId, reason) {
       var info = masterMap[cleanId];
       if (!info) return { result: 'fail', message: '등록되지 않은 학번입니다: ' + studentId };
 
-      var sheet = getAttendanceSheet_();
       var dateKey = normalizeDateText(dateText);
       var day = dayOfWeekKo_(parseDateKey(dateKey));
       var month = dateKey.substring(0, 7);
       var p = String(period || '').trim();
 
       var now = new Date();
-      deletePreexistingAttendanceRow_(sheet, dateKey, p, cleanId);
-      sheet.appendRow([now, cleanId, month, day, p, dateKey, '교사결석', String(reason || '').trim()]);
+      var rawLog = createRawLogWriter_();
+      rawLog.upsert(dateKey, p, cleanId, [now, cleanId, month, day, p, dateKey, '교사결석', String(reason || '').trim()]);
 
       var writer = createResultUpserter_();
       writer.upsert(dateKey, p, cleanId, '결석', String(reason || '').trim(), now);
@@ -556,16 +620,3 @@ function appendApprovalRow_(checkSheet, dateKey, period, studentId, name, classN
   checkSheet.getRange(newRowIndex, 2, 1, 1).setNumberFormat('@STRING@');
 }
 
-function deletePreexistingAttendanceRow_(sheet, dateText, period, studentId) {
-  var data = sheet.getDataRange().getValues();
-  for (var i = data.length - 1; i >= 1; i--) {
-    if (normalizeDateText(data[i][5]) === dateText && String(data[i][4]).trim() === period && cleanStudentId(data[i][1]) === studentId) {
-      sheet.deleteRow(i + 1);
-    }
-  }
-}
-
-// NFC_Integration.gs / Code.gs에서 쓰던 기존 이름을 그대로 유지한다.
-function deletePreexistingRow(sheet, dateText, period, studentId) {
-  deletePreexistingAttendanceRow_(sheet, dateText, period, studentId);
-}
