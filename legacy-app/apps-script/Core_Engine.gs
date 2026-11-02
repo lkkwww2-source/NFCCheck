@@ -287,10 +287,13 @@ function createResultUpserter_() {
   var lastRow = resultSheet.getLastRow();
   // 학기가 지날수록 출결결과가 몇만 줄까지 쌓일 수 있는데, 매 요청마다 그 전체를 읽으면
   // 시트가 커질수록 이 함수 자체가 점점 느려져서 결국 다시 타임아웃/잠금 대기로 이어진다.
-  // 실제 정정은 거의 항상 최근 날짜에 몰리므로, 최근 N줄만 인덱싱해 비용을 일정하게 묶어둔다.
+  // syncAttendance()의 전체 재계산은 날짜 오름차순으로 시트를 다시 쓰므로, 재계산 직후에는
+  // "오늘" 줄들이 항상 맨 끝에 몰려 있고 그날 실시간으로 추가되는 줄도 계속 그 뒤에 붙는다 -
+  // 즉 "최근 N줄"은 사실상 "당일 기록"과 거의 같다. 전교생(264명)이 3타임을 전부 채워도
+  // 하루 최대 792줄이라, 500줄이면 당일 기록은 충분히 다 들어온다.
   // 이보다 오래된 날짜를 고치는 드문 경우엔 새 줄이 하나 더 생길 수 있지만, 5분마다 도는
   // syncAttendance() 전체 재계산이 웹앱응답 원본을 기준으로 항상 중복 없이 다시 정리해 준다.
-  var RECENT_WINDOW_ROWS = 3000;
+  var RECENT_WINDOW_ROWS = 500;
   var startRow = Math.max(2, lastRow - RECENT_WINDOW_ROWS + 1);
   if (lastRow >= 2) {
     var data = resultSheet.getRange(startRow, 1, lastRow - startRow + 1, 5).getValues();
